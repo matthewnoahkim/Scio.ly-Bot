@@ -1,8 +1,7 @@
-// /commands/frq.js
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
-// Static options
+
 const eventOptions = [
   "Anatomy - Endocrine", "Anatomy - Nervous", "Anatomy - Sense Organs",
   "Astronomy", "Chemistry Lab", "Circuit Lab",
@@ -21,7 +20,6 @@ const difficultyMap = {
   "Very Hard (80-100%)": 0.8
 };
 
-// Subtopics mapping for each event
 const eventSubtopics = {
   "Anatomy - Endocrine": ["Hormones", "Glands", "Regulation", "Feedback", "Development"],
   "Anatomy - Nervous": ["Brain", "Spinal Cord", "Nerves", "Reflexes", "Neurotransmitters"],
@@ -43,7 +41,6 @@ const eventSubtopics = {
   "Water Quality - Freshwater": ["PH", "Dissolved Oxygen", "Nutrients", "Pollutants", "Testing"]
 };
 
-// Generate subtopic number options (1-11)
 const subtopicNumberOptions = Array.from({ length: 11 }, (_, i) => ({
   name: `Subtopic ${i + 1}`,
   value: (i + 1).toString()
@@ -89,7 +86,6 @@ module.exports = {
         difficulty_max = difficulty_min + 0.19;
       }
 
-      // Map subtopic number to actual subtopic name
       let subtopics = null;
       if (subtopicNumber && eventSubtopics[event]) {
         const subtopicIndex = parseInt(subtopicNumber) - 1;
@@ -119,7 +115,6 @@ module.exports = {
         return;
       }
     
-      // Create embed
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
         .setTitle('Free Response Question')

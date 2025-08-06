@@ -6,7 +6,7 @@ const API_BASE_URL = 'https://scio.ly/api';
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('check')
-        .setDescription('Check your answer to a question')
+        .setDescription('Check your answer to a multiple choice or free responsequestion')
         .addStringOption(option =>
             option.setName('question_id')
                 .setDescription('The ID of the question to check')
@@ -23,7 +23,6 @@ module.exports = {
             const questionId = interaction.options.getString('question_id');
             const userAnswer = interaction.options.getString('answer');
 
-            // Fetch the question from the API
             const questionResponse = await axios.get(`${API_BASE_URL}/questions/${questionId}`);
             
             if (!questionResponse.data.success) {
@@ -37,29 +36,22 @@ module.exports = {
             let isCorrect = false;
             let correctAnswers = [];
 
-            // Handle MCQ questions
             if (question.question_type === 'mcq' || question.options) {
-                // Function to convert numbers to letters (0=A, 1=B, 2=C, etc.)
                 const numberToLetter = (num) => {
                     const number = typeof num === 'string' ? parseInt(num) : num;
                     if (isNaN(number) || number < 0) return num.toString();
-                    return String.fromCharCode(65 + number); // 65 is 'A', so 65 + 0 = 'A'
+                    return String.fromCharCode(65 + number);
                 };
 
-                // Extract correct answers and convert numbers to letters
                 const rawAnswers = Array.isArray(question.answers) ? question.answers : [question.answers];
                 correctAnswers = rawAnswers.map(ans => numberToLetter(ans));
                 
-                // Normalize user answer to uppercase for comparison
                 const normalizedUserAnswer = userAnswer.trim().toUpperCase();
 
-                // Check if user answer matches any correct answer (letter only)
                 isCorrect = correctAnswers.includes(normalizedUserAnswer);
             } 
-            // Handle FRQ questions
             else {
                 try {
-                    // Use AI to grade free response
                     const gradeResponse = await axios.post(`${API_BASE_URL}/gemini/grade-free-responses`, {
                         freeResponses: [{
                             question: question,
@@ -92,7 +84,6 @@ module.exports = {
                 }
             }
 
-            // Create response embed
             const embed = new EmbedBuilder()
                 .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
                 .setTitle(isCorrect ? '**Correct!**' : '**Incorrect**')

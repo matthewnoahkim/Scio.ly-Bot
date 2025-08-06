@@ -19,7 +19,6 @@ module.exports = {
 
             const questionId = interaction.options.getString('question_id');
 
-            // First, fetch the question from the API
             const questionResponse = await axios.get(`${API_BASE_URL}/questions/${questionId}`);
             
             if (!questionResponse.data.success) {
@@ -31,7 +30,6 @@ module.exports = {
 
             const question = questionResponse.data.data;
 
-            // Get AI explanation
             try {
                 const explainPayload = {
                     question: question,
@@ -46,7 +44,6 @@ module.exports = {
 
                 const explanation = explainResponse.data.data.explanation || 'No explanation available.';
 
-                // Create response embed
                 const embed = new EmbedBuilder()
                     .setColor(0x0099FF)
                     .setTitle('**Question Explanation**')
