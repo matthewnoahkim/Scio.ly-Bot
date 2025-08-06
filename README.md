@@ -1,6 +1,6 @@
 # Scio.ly-Bot (Hylas, the Cat)
 [Click here to add to server](https://discord.com/oauth2/authorize?client_id=1400979720614711327&permissions=8&integration_type=0&scope=bot+applications.commands) |
-[Click here to learn how to use the commands](https://discord.com/oauth2/authorize?client_id=1400979720614711327&permissions=8&integration_type=0&scope=bot+applications.commands) |
+[Click here to learn how to use the commands](https://docs.google.com/document/d/1-IyV7iayN1tiFaXmqgNmHv2tHwK_BC8LgbA34MY1ngg) |
 [Click here to visit the the main Scio.ly site](https://scio.ly/)
 
 Hylas, the Cat is the Discord Bot version of the testing-taking platform, Scio.ly, a study tool for students preparing for Science Olympiad.
