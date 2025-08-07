@@ -1,8 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
-const API_BASE_URL = 'https://scio.ly/api';
-
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('explain')
@@ -19,8 +17,8 @@ module.exports = {
 
             const questionId = interaction.options.getString('question_id');
 
-            const questionResponse = await axios.get(`${API_BASE_URL}/questions/${questionId}`);
-            
+            const questionResponse = await axios.get(`https://scio.ly/api/questions/${questionId}`);
+
             if (!questionResponse.data.success) {
                 return await interaction.editReply({
                     content: 'Question not found. Please check the question ID.',
@@ -36,7 +34,7 @@ module.exports = {
                     event: question.event
                 };
 
-                const explainResponse = await axios.post(`${API_BASE_URL}/gemini/explain`, explainPayload);
+                const explainResponse = await axios.post(`https://scio.ly/api/gemini/explain`, explainPayload);
 
                 if (!explainResponse.data.success) {
                     throw new Error('Failed to generate explanation');
@@ -91,19 +89,19 @@ module.exports = {
                 
                 if (explainError.response && explainError.response.status === 429) {
                     await interaction.editReply({
-                        content: 'Rate limit exceeded. Please visit https://scio.ly/docs for help.',
+                        content: 'Rate limit exceeded. Please try again in a few moments.',
                         ephemeral: true
                     });
                 } else {
                     await interaction.editReply({
-                        content: 'Command failed. Please visit https://scio.ly/docs for help.',
+                        content: 'Explanation failed. Please try again in a few moments.',
                         ephemeral: true
                     });
                 }
             }
 
         } catch (error) {
-            console.error('Error in explain command:', error);
+            console.error('Error in Explain command:', error);
             
             if (error.response && error.response.status === 404) {
                 await interaction.editReply({
@@ -112,7 +110,7 @@ module.exports = {
                 });
             } else {
                 await interaction.editReply({
-                    content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                    content: 'Command failed. Please try again later.',
                     ephemeral: true
                 });
             }

@@ -1,8 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
-const API_BASE_URL = 'https://scio.ly/api';
-
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('check')
@@ -23,7 +21,7 @@ module.exports = {
             const questionId = interaction.options.getString('question_id');
             const userAnswer = interaction.options.getString('answer');
 
-            const questionResponse = await axios.get(`${API_BASE_URL}/questions/${questionId}`);
+            const questionResponse = await axios.get(`https://scio.ly/api/questions/${questionId}`);
             
             if (!questionResponse.data.success) {
                 return await interaction.editReply({
@@ -52,7 +50,7 @@ module.exports = {
             } 
             else {
                 try {
-                    const gradeResponse = await axios.post(`${API_BASE_URL}/gemini/grade-free-responses`, {
+                    const gradeResponse = await axios.post(`https://scio.ly/api/gemini/grade-free-responses`, {
                         freeResponses: [{
                             question: question,
                             correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
@@ -62,7 +60,7 @@ module.exports = {
 
                     if (gradeResponse.data.success && gradeResponse.data.data.length > 0) {
                         const result = gradeResponse.data.data[0];
-                        isCorrect = result.isCorrect || result.score >= 0.7;
+                        isCorrect = result.isCorrect;
 
                         const rawAnswers = Array.isArray(question.answers) ? question.answers : [question.answers];
                         correctAnswers = rawAnswers.map(ans => {
@@ -78,7 +76,7 @@ module.exports = {
                 } catch (gradeError) {
                     console.error('Error grading FRQ:', gradeError);
                     return await interaction.editReply({
-                        content: 'Command failed. Please visit https://scio.ly/docs for help.',
+                        content: 'Grading failed. Please try again in a few moments.',
                         ephemeral: true
                     });
                 }
@@ -107,25 +105,19 @@ module.exports = {
                 )
                 .setFooter({ text: 'Use /explain to check the question!' });
 
-
             await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
-            console.error('Error in check command:', error);
+            console.error('Error in Check command:', error);
             
-            if (error.response && error.response.status === 404) {
+            if (error.response && error.response.status === 429) {
                 await interaction.editReply({
-                    content: 'Question not found. Please check the question ID.',
-                    ephemeral: true
-                });
-            } else if (error.response && error.response.status === 429) {
-                await interaction.editReply({
-                    content: 'Rate limit exceeded. Please visit https://scio.ly/docs for help.',
+                    content: 'Rate limit exceeded. Please try again in a few moments.',
                     ephemeral: true
                 });
             } else {
                 await interaction.editReply({
-                    content: 'Command failed. Please visit https://scio.ly/docs for help.',
+                    content: 'Command failed. Please try again later.',
                     ephemeral: true
                 });
             }
