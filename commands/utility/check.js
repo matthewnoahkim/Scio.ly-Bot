@@ -4,7 +4,7 @@ const axios = require('axios');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('check')
-        .setDescription('Check your answer to a multiple choice or free responsequestion')
+        .setDescription('Check your answer to a question')
         .addStringOption(option =>
             option.setName('question_id')
                 .setDescription('The ID of the question to check')
