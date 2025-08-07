@@ -1,3 +1,5 @@
+// Work in progress
+
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
@@ -43,9 +45,9 @@ module.exports = {
       const res = await axios.get('https://scio.ly/api/questions', { params: query });
       const question = res.data.data[0];
 
-      if (!question) {
+     if (!question) {
         await interaction.editReply({
-          content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Command coming soon!',
           ephemeral: true
         });
         return;
@@ -58,12 +60,12 @@ module.exports = {
         .addFields(
           {
             name: '**Division:**',
-            value: question.division || 'N/A',
+            value: question.division,
             inline: true
           },
           {
             name: '**Cipher Type:**',
-            value: question.cipher_type || 'N/A',
+            value: question.cipher_type,
             inline: true
           },
           {
@@ -72,14 +74,6 @@ module.exports = {
             inline: true
           }
         );
-
-      if (question.replacement_table) {
-        embed.addFields({
-          name: '**Replacement Table:**',
-          value: `\`\`\`${question.replacement_table}\`\`\``,
-          inline: false
-        });
-      }
 
       embed.setFooter({ text: 'Use /check to check your answer!' });
 
@@ -90,12 +84,12 @@ module.exports = {
       
       if (err.response && err.response.status === 429) {
         await interaction.editReply({
-          content: 'Rate limit exceeded. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Command coming soon!',
           ephemeral: true
         });
       } else {
         await interaction.editReply({
-          content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Command coming soon!',
           ephemeral: true
         });
       }

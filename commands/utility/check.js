@@ -78,7 +78,7 @@ module.exports = {
                 } catch (gradeError) {
                     console.error('Error grading FRQ:', gradeError);
                     return await interaction.editReply({
-                        content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                        content: 'Command failed. Please visit https://scio.ly/docs for help.',
                         ephemeral: true
                     });
                 }
@@ -120,12 +120,12 @@ module.exports = {
                 });
             } else if (error.response && error.response.status === 429) {
                 await interaction.editReply({
-                    content: 'Rate limit exceeded. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                    content: 'Rate limit exceeded. Please visit https://scio.ly/docs for help.',
                     ephemeral: true
                 });
             } else {
                 await interaction.editReply({
-                    content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                    content: 'Command failed. Please visit https://scio.ly/docs for help.',
                     ephemeral: true
                 });
             }

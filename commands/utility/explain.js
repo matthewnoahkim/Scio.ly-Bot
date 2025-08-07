@@ -91,12 +91,12 @@ module.exports = {
                 
                 if (explainError.response && explainError.response.status === 429) {
                     await interaction.editReply({
-                        content: 'Rate limit exceeded. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                        content: 'Rate limit exceeded. Please visit https://scio.ly/docs for help.',
                         ephemeral: true
                     });
                 } else {
                     await interaction.editReply({
-                        content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+                        content: 'Command failed. Please visit https://scio.ly/docs for help.',
                         ephemeral: true
                     });
                 }

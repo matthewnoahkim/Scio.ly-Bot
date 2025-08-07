@@ -108,7 +108,7 @@ module.exports = {
 
       if (!question) {
         await interaction.editReply({
-          content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Command failed. Please visit https://scio.ly/docs for help.',
           ephemeral: true
         });
         return;
@@ -163,12 +163,12 @@ module.exports = {
       
       if (err.response && err.response.status === 429) {
         await interaction.editReply({
-          content: 'Rate limit exceeded. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Rate limit exceeded. Please visit https://scio.ly/docs for help.',
           ephemeral: true
         });
       } else {
         await interaction.editReply({
-          content: 'Command failed. Please visit https://tinyurl.com/HylasTheCatDocumentation for help.',
+          content: 'Command failed. Please visit https://scio.ly/docs for help.',
           ephemeral: true
         });
       }
