@@ -103,7 +103,7 @@ module.exports = {
                         inline: false 
                     }
                 )
-                .setFooter({ text: 'Use /explain to check the question!' });
+                .setFooter({ text: 'Use /explain to explain the question!' });
 
             await interaction.editReply({ embeds: [embed] });
 
