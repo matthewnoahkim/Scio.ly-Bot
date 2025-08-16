@@ -121,7 +121,7 @@ module.exports = {
         },
         {
           name: '**Question ID:**',
-          value: question.base52,
+          value: question.base52.toString(),
           inline: false
         }
       );
