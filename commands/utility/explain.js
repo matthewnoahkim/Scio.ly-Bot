@@ -17,7 +17,7 @@ module.exports = {
 
             const questionId = interaction.options.getString('question_id');
 
-            const questionResponse = await axios.get(`https://scio.ly/api/questions/${questionId}`);
+            const questionResponse = await axios.get(`https://scio.ly/api/questions/base52/${questionId}`);
 
             if (!questionResponse.data.success) {
                 return await interaction.editReply({
