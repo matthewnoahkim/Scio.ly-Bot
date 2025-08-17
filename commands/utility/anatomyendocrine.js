@@ -37,71 +37,65 @@ const prune = (obj) =>
   Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 const pickFirstQuestion = (arr) => Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
 
-// Normalize for option-text matching
-const norm = (s) => String(s ?? '')
-  .trim()
-  .toUpperCase()
-  .replace(/[^\p{L}\p{N}.\-/% ]/gu, '')
-  .replace(/\s+/g, ' ');
-
-// MCQ helpers
-function buildMcqHelpers(options = []) {
-  const letters = Array.from({ length: options.length }, (_, i) => String.fromCharCode(65 + i)); // A,B,C...
-  const textUpper = options.map(norm);
-
-  const letterToIndex = Object.fromEntries(letters.map((L, i) => [L, i]));
-  const textToIndex = Object.fromEntries(textUpper.map((t, i) => [t, i]));
-
-  const tokenToIndex = (tok) => {
-    if (tok == null) return null;
-    const raw = String(tok).trim();
-    // numeric: accept 0-based and 1-based
-    if (/^\d+$/.test(raw)) {
-      const n = parseInt(raw, 10);
-      if (n >= 0 && n < options.length) return n;      // 0-based
-      if (n >= 1 && n <= options.length) return n - 1; // 1-based
-    }
-    // letter
-    const L = raw.toUpperCase()[0];
-    if (letterToIndex[L] !== undefined) return letterToIndex[L];
-    // text
-    const txt = norm(raw);
-    if (textToIndex[txt] !== undefined) return textToIndex[txt];
-    return null;
-  };
-
-  const indexToLetter = (i) => letters[i] ?? '?';
-  return { tokenToIndex, indexToLetter };
+function makeKey() {
+  return crypto.randomBytes(8).toString('hex'); // 16 chars
 }
 
-function parseUserMcqAnswer(ans, tokenToIndex) {
-  const parts = String(ans).split(/[,\s]+/).filter(Boolean);
+// Convert API "answers" to a set of 0-based indices if possible
+function toIndexSet(rawAnswers, optionCount) {
+  const arr = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
   const idxs = new Set();
-  for (const p of parts) {
-    const idx = tokenToIndex(p);
-    if (idx !== null) idxs.add(idx);
+
+  for (let a of arr) {
+    if (a == null) continue;
+    // letter like "A"
+    if (typeof a === 'string' && /^[A-Za-z]$/.test(a.trim())) {
+      const L = a.trim().toUpperCase();
+      const idx = L.charCodeAt(0) - 65;
+      if (idx >= 0 && idx < optionCount) idxs.add(idx);
+      continue;
+    }
+    // numeric (string or number) — try 0-based then 1-based
+    const n = Number(String(a).trim());
+    if (Number.isInteger(n)) {
+      if (n >= 0 && n < optionCount) { idxs.add(n); continue; }
+      if (n >= 1 && n <= optionCount) { idxs.add(n - 1); continue; }
+    }
   }
   return idxs;
 }
 
-function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
-  const arr = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
+function indexToLetter(i) {
+  return String.fromCharCode(65 + i); // 0->A
+}
 
-  let mapped = arr.map(a => tokenToIndex(a));
-  if (mapped.every(i => i !== null && i >= 0 && i < optionCount)) return new Set(mapped);
+// Strictly parse user MCQ input as letters only (supports compact like "ACD")
+function parseUserLettersOnly(input, optionCount) {
+  const s = String(input).trim().toUpperCase();
 
-  const numeric = arr.every(a => /^\d+$/.test(String(a).trim()));
-  if (numeric) {
-    mapped = arr.map(a => {
-      const n = parseInt(String(a).trim(), 10);
-      if (n >= 1 && n <= optionCount) return n - 1;
-      if (n >= 0 && n < optionCount) return n;
-      return null;
-    });
-    if (mapped.every(i => i !== null)) return new Set(mapped);
+  // Allow only letters A-Z and separators (spaces/commas). Examples: "A", "A C", "A, C", "ACD"
+  if (!/^[A-Z ,]+$/.test(s)) {
+    return { valid: false, letters: [] };
   }
 
-  return new Set();
+  // Remove separators and split into individual letters
+  const lettersArr = s.replace(/[ ,]+/g, '').split('');
+  if (lettersArr.length === 0) {
+    return { valid: false, letters: [] };
+  }
+
+  // Validate each letter against option count and de-duplicate
+  const uniqLetters = new Set();
+  for (const ch of lettersArr) {
+    const idx = ch.charCodeAt(0) - 65; // A->0
+    if (idx < 0 || idx >= optionCount) {
+      return { valid: false, letters: [] };
+    }
+    uniqLetters.add(ch);
+  }
+
+  // Return sorted unique letters (caller does exact-set comparison)
+  return { valid: true, letters: [...uniqLetters].sort() };
 }
 
 // Gemini FRQ grading truthiness
@@ -114,10 +108,6 @@ function extractIsCorrect(result) {
   if (typeof result.grade === 'number') return result.grade >= 0.5;
   if (typeof result.pass === 'boolean') return result.pass;
   return false;
-}
-
-function makeKey() {
-  return crypto.randomBytes(8).toString('hex'); // 16 chars
 }
 
 // ---- One-time handlers ----
@@ -143,7 +133,7 @@ function ensureHandlers(client) {
 
         const input = new TextInputBuilder()
           .setCustomId('answer_input')
-          .setLabel('Your answer (A/B/C/D, 1/2/3/4, or text)')
+          .setLabel('Enter letter(s) only (e.g., A, A C, or ACD)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true);
 
@@ -152,7 +142,7 @@ function ensureHandlers(client) {
         return;
       }
 
-      // Explain button → call explain endpoint (ONLY the question; strip answers). Output ONLY explanation.
+      // Explain button → call explain endpoint (ONLY question; strip answers). Output ONLY explanation text.
       if (i.isButton() && i.customId.startsWith('ae:explain:')) {
         // customId: ae:explain:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
@@ -167,8 +157,8 @@ function ensureHandlers(client) {
 
         try {
           const { answers, ...questionNoAnswers } = question || {};
-          const body = { question: questionNoAnswers }; // exactly per your spec
-          const r = await axios.post('https://scio.ly/api/gemini/explain', body);
+          const body = { question: questionNoAnswers };
+          const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
 
           if (!r.data?.success) {
             return i.reply({ content: 'Explanation failed. Please try again in a few moments.', ephemeral: true });
@@ -210,35 +200,47 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // Cache last answer (kept in case you later want to use it)
         i.client._aeLastAnswer.set(key, userAnswerRaw);
 
         let isCorrect = false;
         let shownCorrect = '';
 
         if (Array.isArray(question.options) && question.options.length > 0) {
-          // -------- MCQ: local grading only --------
-          const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
-          const correctIdxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
-          const userIdxSet = parseUserMcqAnswer(userAnswerRaw, tokenToIndex);
+          // -------- MCQ: STRICT LETTERS-ONLY GRADING (supports compact like ACD) --------
+          const optionCount = question.options.length;
 
-          if (correctIdxSet.size > 0) {
-            const correctSorted = [...correctIdxSet].sort((a, b) => a - b);
-            const userSorted = [...userIdxSet].sort((a, b) => a - b);
+          // Resolve correct indices/letters from API answers
+          const correctIdxSet = toIndexSet(question.answers, optionCount);
+          const correctLetters = [...correctIdxSet].sort((a, b) => a - b).map(indexToLetter);
 
-            if (correctSorted.length === 1) {
-              isCorrect = userSorted.length === 1 && userSorted[0] === correctSorted[0];
+          // If we can't resolve correct letters, fail closed (won't mark correct).
+          if (correctLetters.length === 0) {
+            shownCorrect = Array.isArray(question.answers) ? question.answers.join(', ') : String(question.answers);
+            isCorrect = false;
+          } else {
+            // Parse user input as letters only (includes compact like "ACD")
+            const parsed = parseUserLettersOnly(userAnswerRaw, optionCount);
+
+            // If the input isn't strictly letters-only or contains invalid tokens → incorrect
+            if (!parsed.valid) {
+              isCorrect = false;
             } else {
-              isCorrect =
-                userSorted.length === correctSorted.length &&
-                correctSorted.every((v, idx) => v === userSorted[idx]);
+              const userLetters = [...new Set(parsed.letters)].sort();
+              const correctSet = new Set(correctLetters);
+              const userSet = new Set(userLetters);
+
+              // Single-answer → exactly one letter and it must match
+              if (correctLetters.length === 1) {
+                isCorrect = userLetters.length === 1 && userLetters[0] === correctLetters[0];
+              } else {
+                // Multi-answer → exact set equality
+                isCorrect =
+                  userSet.size === correctSet.size &&
+                  [...correctSet].every(L => userSet.has(L));
+              }
             }
 
-            shownCorrect = correctSorted.map(indexToLetter).join(', ');
-          } else {
-            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
-            shownCorrect = raw.map(a => String(a)).join(', ');
-            isCorrect = false;
+            shownCorrect = correctLetters.join(', ');
           }
         } else {
           // -------- FRQ: AI grading ONLY --------
@@ -247,19 +249,29 @@ function ensureHandlers(client) {
               'https://scio.ly/api/gemini/grade-free-responses',
               {
                 freeResponses: [{
-                question: question,
-                correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                studentAnswer: userAnswer,
+                  question,
+                  correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
+                  studentAnswer: userAnswerRaw,
                 }],
-              }
+              },
             );
-            const arr = gradeRes?.data?.data;
-            if (gradeRes?.data?.success && Array.isArray(arr) && arr.length > 0) {
-              const result = arr[0];
-              isCorrect = extractIsCorrect(result);
-            } else {
-              return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
-            }
+           if (gradeResponse.data.success && gradeResponse.data.data.length > 0) {
+              const result = gradeResponse.data.data[0];
+              isCorrect = result.isCorrect;
+
+              const rawAnswers = Array.isArray(question.answers)
+               ? question.answers : [question.answers];
+
+                        correctAnswers = rawAnswers.map(ans => {
+                            const number = typeof ans === 'string' ? parseInt(ans) : ans;
+                            if (!isNaN(number) && number >= 0 && number <= 25) {
+                                return String.fromCharCode(65 + number);
+                            }
+                            return ans.toString();
+                        });
+                    } else {
+                        throw new Error('Failed to grade response');
+                    }
           } catch (err) {
             console.error('FRQ grading error:', err?.message);
             return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
