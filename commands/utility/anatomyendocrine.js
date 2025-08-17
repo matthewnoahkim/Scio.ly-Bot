@@ -12,7 +12,7 @@ const {
 const axios = require('axios');
 const crypto = require('crypto');
 
-// ---- Config choices ----
+// ---- Options UI ----
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
@@ -37,14 +37,26 @@ const prune = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '')
 );
 const pickFirstQuestion = (arr) => Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
-const clean = (s) => String(s).trim().toUpperCase()
-  .replace(/[^\p{L}\p{N} ]/gu, '')
+
+// Normalize text for loose comparisons
+const norm = (s) => String(s ?? '')
+  .trim()
+  .toUpperCase()
+  .replace(/[^\p{L}\p{N}.\-/% ]/gu, '') // keep letters, digits, ., -, /, %, space
   .replace(/\s+/g, ' ');
+
+// Numeric-safe compare (handles floats like 3.14 vs "3.140")
+function numericEqual(a, b, tol = 1e-6) {
+  const x = Number(String(a).replace(/[^\d.\-]/g, ''));
+  const y = Number(String(b).replace(/[^\d.\-]/g, ''));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return Math.abs(x - y) <= tol * Math.max(1, Math.abs(x), Math.abs(y));
+}
 
 // MCQ helpers
 function buildMcqHelpers(options = []) {
   const letters = Array.from({ length: options.length }, (_, i) => String.fromCharCode(65 + i)); // A,B,C...
-  const textUpper = options.map(clean);
+  const textUpper = options.map(norm);
 
   const letterToIndex = Object.fromEntries(letters.map((L, i) => [L, i]));
   const textToIndex = Object.fromEntries(textUpper.map((t, i) => [t, i]));
@@ -52,14 +64,17 @@ function buildMcqHelpers(options = []) {
   const tokenToIndex = (tok) => {
     if (tok == null) return null;
     const raw = String(tok).trim();
+    // numeric: accept 0-based and 1-based
     if (/^\d+$/.test(raw)) {
       const n = parseInt(raw, 10);
       if (n >= 0 && n < options.length) return n;      // 0-based
       if (n >= 1 && n <= options.length) return n - 1; // 1-based
     }
+    // letter
     const L = raw.toUpperCase()[0];
     if (letterToIndex[L] !== undefined) return letterToIndex[L];
-    const txt = clean(raw);
+    // text
+    const txt = norm(raw);
     if (textToIndex[txt] !== undefined) return textToIndex[txt];
     return null;
   };
@@ -98,22 +113,73 @@ function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
   return new Set();
 }
 
-function makeKey() {
-  return crypto.randomBytes(8).toString('hex'); // 16 chars
+// FRQ: local quick check before calling grader
+function localFrqCorrect(userAns, rawAnswers) {
+  if (!rawAnswers || (Array.isArray(rawAnswers) && rawAnswers.length === 0)) return null;
+  const userN = norm(userAns);
+  const answers = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
+
+  for (const a of answers) {
+    const aN = norm(a);
+    if (!aN) continue;
+
+    // Exact normalized match
+    if (userN === aN) return true;
+
+    // Numeric equality tolerance
+    if (numericEqual(userAns, a)) return true;
+
+    // Contains check (avoid false positives on very short strings)
+    if (aN.length >= 4 && (userN.includes(aN) || aN.includes(userN))) return true;
+  }
+  return false;
 }
 
-// ---- One-time handlers: button + modal + explain ----
+// Gemini result interpretation
+function extractIsCorrect(result) {
+  if (typeof result !== 'object' || result === null) return false;
+  if (typeof result.isCorrect === 'boolean') return result.isCorrect;
+  if (typeof result.correct === 'boolean') return result.correct;
+  if (typeof result.is_correct === 'boolean') return result.is_correct;
+  if (typeof result.score === 'number') return result.score >= 0.5;
+  if (typeof result.grade === 'number') return result.grade >= 0.5;
+  if (typeof result.pass === 'boolean') return result.pass;
+  return false;
+}
+
+// Extract explanation text from various shapes
+function extractExplanation(payload) {
+  const d = payload?.data ?? payload;
+  if (typeof d === 'string') return d;
+  if (typeof d?.explanation === 'string') return d.explanation;
+  if (Array.isArray(d?.explanations) && typeof d.explanations[0] === 'string') return d.explanations[0];
+  if (typeof d?.text === 'string') return d.text;
+  if (typeof payload?.message === 'string') return payload.message;
+  return '';
+}
+
+// Chunk text to fit embed limits
+function chunkText(s, max = 1000) {
+  const parts = [];
+  for (let i = 0; i < s.length; i += max) parts.push(s.slice(i, i + max));
+  return parts;
+}
+
+function makeKey() {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+// ---- One-time handlers ----
 function ensureHandlers(client) {
   if (client._aeHandlersInstalled) return;
   client._aeHandlersInstalled = true;
-  client._aeQuestionCache = new Map(); // key -> question object
-  client._aeLastAnswer = new Map();    // key -> last user answer (string)
+  client._aeQuestionCache = new Map(); // key -> question
+  client._aeLastAnswer = new Map();    // key -> last user answer
 
   client.on('interactionCreate', async (i) => {
     try {
-      // Submit Answer button → show modal
+      // Submit Answer
       if (i.isButton() && i.customId.startsWith('ae:answer:')) {
-        // ae:answer:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This question wasn't generated for you.", ephemeral: true });
@@ -125,7 +191,7 @@ function ensureHandlers(client) {
 
         const input = new TextInputBuilder()
           .setCustomId('answer_input')
-          .setLabel('Your answer (A/B/C/etc., or text)')
+          .setLabel('Your answer (A/B/C/D, 1/2/3/4, or text)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true);
 
@@ -134,9 +200,8 @@ function ensureHandlers(client) {
         return;
       }
 
-      // Explain button → call explain endpoint
+      // Explain
       if (i.isButton() && i.customId.startsWith('ae:explain:')) {
-        // ae:explain:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This explanation isn't for you.", ephemeral: true });
@@ -147,45 +212,58 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // If user already submitted an answer, include it; otherwise omit
         const maybeAnswer = i.client._aeLastAnswer.get(key);
-        let explanation = '';
+        let explanationText = '';
 
         try {
           const body = {
-            question, // per docs
+            question,
             ...(maybeAnswer ? { userAnswer: maybeAnswer } : {}),
             event: question.event
           };
           const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
-
-          // Be defensive about shape
-          explanation =
-            r.data?.data?.explanation ??
-            r.data?.data?.text ??
-            (Array.isArray(r.data?.data?.explanations) ? r.data.data.explanations[0] : undefined) ??
-            r.data?.message ??
-            'No explanation provided.';
-
+          explanationText = extractExplanation(r.data);
         } catch (err) {
-          console.error('Explain error:', err?.message);
-          return i.reply({ content: 'Failed to generate an explanation. Please try again shortly.', ephemeral: true });
+          // network/API error → fall back below
+          console.error('Explain API error:', err?.message);
         }
 
-        // Trim explanation if it’s too long for an embed description
-        if (explanation.length > 3900) explanation = explanation.slice(0, 3900) + '…';
+        // Fallback local explanation if needed
+        if (!explanationText) {
+          if (Array.isArray(question.options) && question.options.length > 0) {
+            // MCQ fallback: show correct letter(s) and text
+            const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
+            const idxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
+            if (idxSet.size > 0) {
+              const letters = [...idxSet].sort((a,b)=>a-b).map(indexToLetter);
+              const lines = [...idxSet].sort((a,b)=>a-b).map(i => `**${indexToLetter(i)})** ${question.options[i]}`);
+              explanationText = `**Correct choice(s): ${letters.join(', ')}**\n\n${lines.join('\n')}`;
+            } else {
+              const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
+              explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
+            }
+          } else {
+            // FRQ fallback: list acceptable answers
+            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
+            explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
+          }
+        }
 
+        const chunks = chunkText(explanationText, 1000);
         const exEmbed = new EmbedBuilder()
           .setColor(0x5865F2)
           .setTitle('Explanation')
-          .setDescription(`**Question:** ${question.question}\n\n${explanation}`);
+          .setDescription(`**Question:** ${question.question}`);
+
+        chunks.forEach((c, ix) => {
+          exEmbed.addFields({ name: ix === 0 ? 'Details' : 'Details (cont.)', value: c });
+        });
 
         return i.reply({ embeds: [exEmbed], ephemeral: true });
       }
 
       // Modal submit → grade
       if (i.isModalSubmit() && i.customId.startsWith('ae:submit:')) {
-        // ae:submit:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This form isn't for you.", ephemeral: true });
@@ -197,7 +275,7 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // keep last answer for the explain call
+        // cache last answer for explain
         i.client._aeLastAnswer.set(key, userAnswerRaw);
 
         let isCorrect = false;
@@ -216,52 +294,63 @@ function ensureHandlers(client) {
             if (correctSorted.length === 1) {
               isCorrect = userSorted.length === 1 && userSorted[0] === correctSorted[0];
             } else {
-              isCorrect = userSorted.length === correctSorted.length &&
-                          correctSorted.every((v, idx) => v === userSorted[idx]);
+              isCorrect =
+                userSorted.length === correctSorted.length &&
+                correctSorted.every((v, idx) => v === userSorted[idx]);
             }
 
             shownCorrect = correctSorted.map(indexToLetter).join(', ');
           } else {
-            // fallback to raw answers
             const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
             shownCorrect = raw.map(a => String(a)).join(', ');
             isCorrect = false;
           }
         } else {
-          // FRQ → grade via API
-          try {
-            const gradeRes = await axios.post(
-              'https://scio.ly/api/gemini/grade-free-responses',
-              {
-                freeResponses: [{
-                  question,
-                  correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                  studentAnswer: userAnswerRaw,
-                }],
-              },
-              { timeout: 30000 }
-            );
-
-            const ok = gradeRes.data?.success && Array.isArray(gradeRes.data?.data) && gradeRes.data.data.length > 0;
-            if (!ok) throw new Error('Bad grading response');
-
-            const result = gradeRes.data.data[0];
-            isCorrect = Boolean(result.isCorrect ?? result.correct ?? false);
-
-            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
-            shownCorrect = raw.map(a => String(a)).join(', ');
-          } catch (err) {
-            console.error('FRQ grading error:', err?.message);
-            return i.reply({ content: 'Grading failed. Please try again shortly.', ephemeral: true });
+          // FRQ
+          // 1) Local check first
+          const local = localFrqCorrect(userAnswerRaw, question.answers);
+          if (local === true) {
+            isCorrect = true;
+          } else {
+            // 2) Fallback to API
+            try {
+              const gradeRes = await axios.post(
+                'https://scio.ly/api/gemini/grade-free-responses',
+                {
+                  freeResponses: [{
+                    question,
+                    correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
+                    studentAnswer: userAnswerRaw,
+                  }],
+                },
+                { timeout: 30000 }
+              );
+              const arr = gradeRes?.data?.data;
+              if (gradeRes?.data?.success && Array.isArray(arr) && arr.length > 0) {
+                const result = arr[0];
+                isCorrect = extractIsCorrect(result);
+              } else {
+                // If API didn’t give a usable answer, fall back to local result (may be false or null)
+                isCorrect = local === true;
+              }
+            } catch (err) {
+              console.error('FRQ grading error:', err?.message);
+              // If grading fails, stick with local decision
+              isCorrect = local === true;
+            }
           }
+
+          const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
+          shownCorrect = raw.map(a => String(a)).join(', ');
         }
 
         const resEmbed = new EmbedBuilder()
           .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
           .setTitle(isCorrect ? '**Correct!**' : '**Incorrect**')
+          .setDescription(`**Question:** ${question.question}`)
           .addFields(
             { name: '**Your Answer:**', value: String(userAnswerRaw), inline: true },
-            { name: '**Correct Answer(s):**', value: shownCorrect || '—', inline: true },
+            { name: '**Accepted Answer(s):**', value: shownCorrect || '—', inline: true },
           )
           .setFooter({ text: 'Click “Explain” for a detailed explanation.' });
 
