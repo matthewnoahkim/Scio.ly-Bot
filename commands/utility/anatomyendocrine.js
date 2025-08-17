@@ -10,7 +10,9 @@ const {
   TextInputStyle,
 } = require('discord.js');
 const axios = require('axios');
+const crypto = require('crypto');
 
+// ---- Config choices (match your slash command options) ----
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
@@ -30,30 +32,112 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// Small helpers
-const prune = (obj) =>
-  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+// ---- Small utilities ----
+const prune = (obj) => Object.fromEntries(
+  Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '')
+);
 const pickFirstQuestion = (arr) => Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+const clean = (s) => String(s).trim().toUpperCase()
+  .replace(/[^\p{L}\p{N} ]/gu, '')
+  .replace(/\s+/g, ' ');
 
-// Install one-time handlers for the Answer button + modal
+// Build robust helpers for MCQ normalization
+function buildMcqHelpers(options = []) {
+  const letters = Array.from({ length: options.length }, (_, i) => String.fromCharCode(65 + i)); // A,B,C...
+  const textUpper = options.map(clean);
+
+  const letterToIndex = Object.fromEntries(letters.map((L, i) => [L, i]));
+  const textToIndex = Object.fromEntries(textUpper.map((t, i) => [t, i]));
+
+  // Normalize ANY token (number, letter, or text) to an index
+  const tokenToIndex = (tok) => {
+    if (tok == null) return null;
+    const raw = String(tok).trim();
+    // numeric: accept both 0-based and 1-based
+    if (/^\d+$/.test(raw)) {
+      const n = parseInt(raw, 10);
+      if (n >= 0 && n < options.length) return n;      // 0-based
+      if (n >= 1 && n <= options.length) return n - 1; // 1-based
+    }
+    // letter
+    const L = raw.toUpperCase()[0];
+    if (letterToIndex[L] !== undefined) return letterToIndex[L];
+    // text
+    const txt = clean(raw);
+    if (textToIndex[txt] !== undefined) return textToIndex[txt];
+    return null;
+  };
+
+  const indexToLetter = (i) => letters[i] ?? '?';
+  return { tokenToIndex, indexToLetter };
+}
+
+// Parse user MCQ answer into a set of indices (supports multi-answer like "A C" or "1,3,Reefs")
+function parseUserMcqAnswer(ans, tokenToIndex) {
+  const parts = String(ans).split(/[,\s]+/).filter(Boolean);
+  const idxs = new Set();
+  for (const p of parts) {
+    const idx = tokenToIndex(p);
+    if (idx !== null) idxs.add(idx);
+  }
+  return idxs;
+}
+
+// Resolve API "answers" to indices (handles numbers, letters, or text)
+function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
+  const arr = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
+
+  // Try mapping as-is
+  let mapped = arr.map(a => tokenToIndex(a));
+  if (mapped.every(i => i !== null && i >= 0 && i < optionCount)) return new Set(mapped);
+
+  // If mapping failed, attempt 1-based assumption for pure numeric strings
+  const numeric = arr.every(a => /^\d+$/.test(String(a).trim()));
+  if (numeric) {
+    mapped = arr.map(a => {
+      const n = parseInt(String(a).trim(), 10);
+      if (n >= 1 && n <= optionCount) return n - 1;
+      if (n >= 0 && n < optionCount) return n;
+      return null;
+    });
+    if (mapped.every(i => i !== null)) return new Set(mapped);
+  }
+
+  // Fail open — caller will show raw answers
+  return new Set();
+}
+
+// Generate a short random key to track which question the modal should grade
+function makeKey() {
+  return crypto.randomBytes(8).toString('hex'); // 16 chars
+}
+
+// Install one-time handlers (button + modal). Cache question objects in-memory.
 function ensureHandlers(client) {
   if (client._aeHandlersInstalled) return;
   client._aeHandlersInstalled = true;
+  client._aeQuestionCache = new Map(); // key: random token -> question object
 
   client.on('interactionCreate', async (i) => {
     try {
-      // 1) Button clicked → show modal
+      // Button → open modal
       if (i.isButton() && i.customId.startsWith('ae:answer:')) {
-        const [, , base52] = i.customId.split(':');
-        if (!base52) return i.reply({ content: 'Missing question ID.', ephemeral: true });
+        // customId: ae:answer:<key>:by:<userId>
+        const parts = i.customId.split(':');
+        const key = parts[2];
+        const ownerId = parts[4];
+
+        if (ownerId && i.user.id !== ownerId) {
+          return i.reply({ content: "This question wasn't generated for you.", ephemeral: true });
+        }
 
         const modal = new ModalBuilder()
-          .setCustomId(`ae:submit:${base52}:${i.user.id}`)
+          .setCustomId(`ae:submit:${key}:by:${i.user.id}`)
           .setTitle('Submit Your Answer');
 
         const input = new TextInputBuilder()
           .setCustomId('answer_input')
-          .setLabel('Your answer (A/B/C/D or text)')
+          .setLabel('Your answer (A/B/C/D, 1/2/3/4, or text)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true);
 
@@ -62,111 +146,98 @@ function ensureHandlers(client) {
         return;
       }
 
-      // 2) Modal submitted → grade and reply
+      // Modal → grade
       if (i.isModalSubmit() && i.customId.startsWith('ae:submit:')) {
-        const [, , base52, targetUserId] = i.customId.split(':');
+        // customId: ae:submit:<key>:by:<userId>
+        const parts = i.customId.split(':');
+        const key = parts[2];
+        const ownerId = parts[4];
 
-        // Only the opener should be able to submit this modal
-        if (i.user.id !== targetUserId) {
+        if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This form isn't for you.", ephemeral: true });
         }
 
         const userAnswerRaw = i.fields.getTextInputValue('answer_input');
 
-        // Fetch question by base52
-        let question;
-        try {
-          const qRes = await axios.get(`https://scio.ly/api/questions/base52/${encodeURIComponent(base52)}`, { timeout: 15000 });
-          if (!qRes.data?.success || !qRes.data?.data) {
-            return i.reply({ content: 'Question not found.', ephemeral: true });
-          }
-          question = qRes.data.data;
-        } catch (e) {
-          console.error('Fetch by base52 failed:', e?.response?.status, e?.message);
-          return i.reply({ content: 'Could not load the question. Try again.', ephemeral: true });
+        // Must have the question in cache (no IDs used).
+        const question = i.client._aeQuestionCache.get(key);
+        if (!question) {
+          return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
         // ---- Grade ----
-        const numberToLetter = (num) => {
-          const n = typeof num === 'string' ? parseInt(num, 10) : num;
-          if (Number.isNaN(n) || n < 0) return String(num).toUpperCase();
-          return String.fromCharCode(65 + n); // 0->A, 1->B...
-        };
-        const normalizeUserAnswer = (ans) => {
-          const t = ans.trim();
-          if (/^\d+$/.test(t)) return numberToLetter(parseInt(t, 10)); // "0" -> "A"
-          return t.toUpperCase();
-        };
-
         let isCorrect = false;
-        let correctAnswers = [];
+        let shownCorrect = ''; // what we display as correct answer(s)
 
         if (Array.isArray(question.options) && question.options.length > 0) {
           // MCQ
-          const rawAnswers = Array.isArray(question.answers) ? question.answers : [question.answers];
-          const correctLetters = rawAnswers.map(a => numberToLetter(a));
-          correctAnswers = correctLetters;
+          const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
+          const correctIdxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
+          const userIdxSet = parseUserMcqAnswer(userAnswerRaw, tokenToIndex);
 
-          const normalizedUser = normalizeUserAnswer(userAnswerRaw);
+          if (correctIdxSet.size > 0) {
+            const correctSorted = [...correctIdxSet].sort((a, b) => a - b);
+            const userSorted = [...userIdxSet].sort((a, b) => a - b);
 
-          // Letter match (A/B/C/..)
-          isCorrect = correctLetters.includes(normalizedUser);
-
-          // Fallback: match option text (case-insensitive)
-          if (!isCorrect) {
-            const optionText = question.options.map(s => String(s).trim().toUpperCase());
-            // Map user's text to index if matches an option's text
-            const idx = optionText.indexOf(normalizedUser);
-            if (idx !== -1) {
-              isCorrect = correctLetters.includes(numberToLetter(idx));
+            if (correctSorted.length === 1) {
+              isCorrect = userSorted.length === 1 && userSorted[0] === correctSorted[0];
+            } else {
+              // require an exact set match for multi-answer questions
+              isCorrect = userSorted.length === correctSorted.length &&
+                          correctSorted.every((v, idx) => v === userSorted[idx]);
             }
+
+            shownCorrect = correctSorted.map(indexToLetter).join(', ');
+          } else {
+            // Fall back to raw answers (text/letters)
+            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
+            shownCorrect = raw.map(a => String(a)).join(', ');
+            // Can't auto-grade reliably; mark incorrect unless exact raw match (rare)
+            isCorrect = false;
           }
         } else {
-          // FRQ → call grader
+          // FRQ – use documented grading endpoint
           try {
-            const gradeRes = await axios.post('https://scio.ly/api/gemini/grade-free-responses', {
-              freeResponses: [{
-                question,
-                correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                studentAnswer: userAnswerRaw,
-              }],
-            }, { timeout: 30000 });
+            const gradeRes = await axios.post(
+              'https://scio.ly/api/gemini/grade-free-responses',
+              {
+                freeResponses: [{
+                  question,
+                  correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
+                  studentAnswer: userAnswerRaw,
+                }],
+              },
+              { timeout: 30000 }
+            );
 
-            if (gradeRes.data?.success && Array.isArray(gradeRes.data.data) && gradeRes.data.data.length > 0) {
-              const result = gradeRes.data.data[0];
-              isCorrect = !!result.isCorrect;
-              const rawAnswers = Array.isArray(question.answers) ? question.answers : [question.answers];
-              correctAnswers = rawAnswers.map(a => String(a));
-            } else {
-              throw new Error('Failed to grade response');
-            }
+            const ok = gradeRes.data?.success && Array.isArray(gradeRes.data?.data) && gradeRes.data.data.length > 0;
+            if (!ok) throw new Error('Bad grading response');
+
+            const result = gradeRes.data.data[0];
+            isCorrect = Boolean(result.isCorrect ?? result.correct ?? false);
+
+            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
+            shownCorrect = raw.map(a => String(a)).join(', ');
           } catch (err) {
-            console.error('Error grading FRQ:', err);
-            return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
+            console.error('FRQ grading error:', err?.message);
+            return i.reply({ content: 'Grading failed. Please try again shortly.', ephemeral: true });
           }
         }
 
-        const resultEmbed = new EmbedBuilder()
+        const resEmbed = new EmbedBuilder()
           .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
           .setTitle(isCorrect ? '**Correct!**' : '**Incorrect**')
           .setDescription(`**Question:** ${question.question}`)
           .addFields(
-            { name: '**Your Answer:**', value: userAnswerRaw, inline: true },
-            {
-              name: '**Correct Answer(s):**',
-              value: Array.isArray(correctAnswers) ? correctAnswers.join(', ') : String(correctAnswers),
-              inline: true,
-            },
-            { name: '**Question ID (base52):**', value: question.base52 || 'Unavailable', inline: false },
-            { name: '**Question ID (UUID):**', value: question.id || 'Unavailable', inline: false },
+            { name: '**Your Answer:**', value: String(userAnswerRaw), inline: true },
+            { name: '**Correct Answer(s):**', value: shownCorrect || '—', inline: true },
           )
-          .setFooter({ text: 'Use /explain to get a detailed explanation!' });
+          .setFooter({ text: 'Use /explain to get a detailed explanation.' });
 
-        return i.reply({ embeds: [resultEmbed], ephemeral: true });
+        return i.reply({ embeds: [resEmbed], ephemeral: true });
       }
     } catch (err) {
       console.error('anatomyendocrine handlers error:', err);
-      // Best-effort: avoid throwing
     }
   });
 }
@@ -199,7 +270,6 @@ module.exports = {
   async execute(interaction) {
     try {
       ensureHandlers(interaction.client); // install one-time handlers
-
       await interaction.deferReply();
 
       const questionType = interaction.options.getString('question_type');
@@ -235,6 +305,10 @@ module.exports = {
         return;
       }
 
+      // Cache the question under a random key (no IDs exposed)
+      const key = makeKey();
+      interaction.client._aeQuestionCache.set(key, question);
+
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
         .setTitle('Anatomy - Endocrine')
@@ -250,13 +324,12 @@ module.exports = {
           { name: '**Division:**', value: String(question.division ?? '—'), inline: true },
           { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
           { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
-          { name: '**Question ID (base52):**', value: String(question.base52 ?? '—'), inline: false },
         )
-        .setFooter({ text: 'Click "Submit Answer" below to answer.' });
+        .setFooter({ text: 'Click “Submit Answer” to answer.' });
 
       const components = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`ae:answer:${question.base52 || question.id}`) // fall back to UUID if needed
+          .setCustomId(`ae:answer:${key}:by:${interaction.user.id}`)
           .setStyle(ButtonStyle.Primary)
           .setLabel('Submit Answer'),
       );
