@@ -107,7 +107,26 @@ function extractIsCorrect(result) {
   if (typeof result.score === 'number') return result.score >= 0.5;
   if (typeof result.grade === 'number') return result.grade >= 0.5;
   if (typeof result.pass === 'boolean') return result.pass;
+  if (typeof result.label === 'string') return /correct/i.test(result.label);
   return false;
+}
+
+// Be liberal about possible response shapes from the grader
+function extractGradeArray(apiResponse) {
+  const r = apiResponse?.data;
+  if (!r) return null;
+
+  if (Array.isArray(r)) return r;
+  if (Array.isArray(r?.data)) return r.data;
+  if (Array.isArray(r?.results)) return r.results;
+  if (r?.data && (r.data.isCorrect !== undefined || r.data.correct !== undefined || r.data.score !== undefined)) {
+    return [r.data];
+  }
+  if (r?.result && (r.result.isCorrect !== undefined || r.result.correct !== undefined || r.result.score !== undefined)) {
+    return [r.result];
+  }
+  if (r?.data?.result) return [r.data.result];
+  return null;
 }
 
 // ---- One-time handlers ----
@@ -158,10 +177,13 @@ function ensureHandlers(client) {
         try {
           const { answers, ...questionNoAnswers } = question || {};
           const body = { question: questionNoAnswers };
-          const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
+          const r = await axios.post('https://scio.ly/api/gemini/explain', body, {
+            timeout: 30000,
+            headers: { 'Content-Type': 'application/json' },
+          });
 
-          if (!r.data?.success) {
-            return i.reply({ content: 'Explanation failed. Please try again in a few moments.', ephemeral: true });
+          if (r?.data?.success === false) {
+            return i.reply({ content: r.data.error || 'Explanation failed. Please try again in a few moments.', ephemeral: true });
           }
 
           let explanationText =
@@ -181,7 +203,7 @@ function ensureHandlers(client) {
 
           return i.reply({ embeds: [exEmbed], ephemeral: true });
         } catch (err) {
-          console.error('Explain API error:', err?.message);
+          console.error('Explain API error:', err?.response?.data || err.message);
           return i.reply({ content: 'Explanation failed. Please try again in a few moments.', ephemeral: true });
         }
       }
@@ -213,7 +235,7 @@ function ensureHandlers(client) {
           const correctIdxSet = toIndexSet(question.answers, optionCount);
           const correctLetters = [...correctIdxSet].sort((a, b) => a - b).map(indexToLetter);
 
-          // If we can't resolve correct letters, fail closed (won't mark correct).
+          // If we can't resolve correct letters, fail closed
           if (correctLetters.length === 0) {
             shownCorrect = Array.isArray(question.answers) ? question.answers.join(', ') : String(question.answers);
             isCorrect = false;
@@ -221,7 +243,6 @@ function ensureHandlers(client) {
             // Parse user input as letters only (includes compact like "ACD")
             const parsed = parseUserLettersOnly(userAnswerRaw, optionCount);
 
-            // If the input isn't strictly letters-only or contains invalid tokens → incorrect
             if (!parsed.valid) {
               isCorrect = false;
             } else {
@@ -251,21 +272,26 @@ function ensureHandlers(client) {
                 freeResponses: [{
                   question: question,
                   correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                  studentAnswer: userAnswerRaw, // <-- fixed variable
+                  studentAnswer: userAnswerRaw, // <-- correct variable
                 }],
               },
-              { timeout: 30000 }
+              { timeout: 30000, headers: { 'Content-Type': 'application/json' } }
             );
 
-            const ok = gradeResponse?.data?.success && Array.isArray(gradeResponse?.data?.data) && gradeResponse.data.data.length > 0;
-            if (!ok) {
+            if (gradeResponse?.data?.success === false) {
+              // surface server error message when available
+              return i.reply({ content: gradeResponse.data.error || 'Grading failed. Please try again in a few moments.', ephemeral: true });
+            }
+
+            const arr = extractGradeArray(gradeResponse);
+            if (!arr || arr.length === 0) {
               return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
             }
 
-            const result = gradeResponse.data.data[0];
+            const result = arr[0];
             isCorrect = extractIsCorrect(result);
           } catch (err) {
-            console.error('FRQ grading error:', err?.message);
+            console.error('FRQ grading error:', err?.response?.data || err.message);
             return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
           }
 
