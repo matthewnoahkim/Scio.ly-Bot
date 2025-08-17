@@ -47,8 +47,16 @@ module.exports = {
         .addChoices(...subtopicOptions.map(s => ({ name: s, value: s })))),
 
   async execute(interaction) {
+    let hasReplied = false;
+    
     try {
+      // Check if interaction is still valid before deferring
+      if (interaction.deferred || interaction.replied) {
+        return;
+      }
+
       await interaction.deferReply();
+      hasReplied = true;
 
       const questionType = interaction.options.getString('question_type');
       const division = interaction.options.getString('division');
@@ -71,13 +79,18 @@ module.exports = {
         limit: 1
       };
 
-      const res = await axios.get('http://scio.ly/api/questions', { params: query });
+      // Add timeout to the API request to prevent hanging
+      const res = await axios.get('http://scioly-api.vercel.app/api/questions', { 
+        params: query,
+        timeout: 10000 // 10 second timeout
+      });
       
       if (!res.data.success || !res.data.data || res.data.data.length === 0) {
-        await interaction.editReply({
-          content: 'No questions found matching your criteria. Try different filters.',
-          ephemeral: true
-        });
+        if (hasReplied && !interaction.replied) {
+          await interaction.editReply({
+            content: 'No questions found matching your criteria. Try different filters.'
+          });
+        }
         return;
       }
 
@@ -103,12 +116,8 @@ module.exports = {
         });
       }
 
+      // Fixed: Removed duplicate difficulty field
       fields.push(
-        {
-          name: '**Division:**',
-          value: question.division,
-          inline: true
-        },
         {
           name: '**Difficulty:**',
           value: `${Math.round(question.difficulty * 100)}%`,
@@ -121,7 +130,7 @@ module.exports = {
         },
         {
           name: '**Question ID:**',
-          value: question.id.toString(),
+          value: question.base52 || question.id?.toString() || 'N/A',
           inline: false
         }
       );
@@ -129,21 +138,37 @@ module.exports = {
       embed.addFields(...fields);
       embed.setFooter({ text: 'Use /check to check your answer!' });
 
-      await interaction.editReply({ embeds: [embed] });
+      // Check if we can still reply before attempting
+      if (hasReplied && !interaction.replied) {
+        await interaction.editReply({ embeds: [embed] });
+      }
 
     } catch (err) {
       console.error('Error in Chemistry Lab command:', err);
       
-      if (err.response && err.response.status === 429) {
-        await interaction.editReply({
-          content: 'Rate limit exceeded. Please try again in a few moments.',
-          ephemeral: true
-        });
-      } else {
-        await interaction.editReply({
-          content: 'Command failed. Please try again later.',
-          ephemeral: true
-        });
+      // Only attempt to reply if we haven't already and the interaction is still valid
+      try {
+        if (!hasReplied && !interaction.deferred && !interaction.replied) {
+          await interaction.reply({
+            content: 'Command failed. Please try again later.',
+            ephemeral: true
+          });
+        } else if (hasReplied && !interaction.replied) {
+          let errorMessage = 'Command failed. Please try again later.';
+          
+          if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
+            errorMessage = 'Request timed out. Please try again later.';
+          } else if (err.response && err.response.status === 429) {
+            errorMessage = 'Rate limit exceeded. Please try again in a few moments.';
+          }
+          
+          await interaction.editReply({
+            content: errorMessage
+          });
+        }
+      } catch (replyErr) {
+        // If we can't reply, just log it - don't throw another error
+        console.error('Failed to send error message:', replyErr);
       }
     }
   }
