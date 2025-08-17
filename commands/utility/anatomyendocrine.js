@@ -245,33 +245,35 @@ function ensureHandlers(client) {
         } else {
           // -------- FRQ: AI grading ONLY --------
           try {
-            const gradeRes = await axios.post(
-              'https://scio.ly/api/gemini/grade-free-responses',
-              {
-                freeResponses: [{
-                  question,
-                  correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                  studentAnswer: userAnswerRaw,
-                }],
-              },
-            );
-           if (gradeResponse.data.success && gradeResponse.data.data.length > 0) {
+           const gradeResponse = await axios.post('https://scio.ly/api/gemini/grade-free-responses', {
+               freeResponses: [{
+                   question: question,
+                   correctAnswers: Array.isArray(question.answers)
+                       ? question.answers
+                       : [question.answers],
+                   studentAnswer: userAnswer,
+               }],
+           });
+
+            if (gradeResponse.data.success && gradeResponse.data.data.length > 0) {
               const result = gradeResponse.data.data[0];
               isCorrect = result.isCorrect;
-
+           
               const rawAnswers = Array.isArray(question.answers)
-               ? question.answers : [question.answers];
-
-                        correctAnswers = rawAnswers.map(ans => {
-                            const number = typeof ans === 'string' ? parseInt(ans) : ans;
-                            if (!isNaN(number) && number >= 0 && number <= 25) {
-                                return String.fromCharCode(65 + number);
-                            }
-                            return ans.toString();
-                        });
-                    } else {
-                        throw new Error('Failed to grade response');
-                    }
+                ? question.answers
+                : [question.answers];
+           
+              correctAnswers = rawAnswers.map(ans => {
+              const number = typeof ans === 'string' ? parseInt(ans) : ans;
+              if (!isNaN(number) && number >= 0 && number <= 25) {
+                return String.fromCharCode(65 + number);
+              }
+                return ans.toString();
+              });
+              } else {
+                throw new Error('Failed to grade response');
+              }
+           
           } catch (err) {
             console.error('FRQ grading error:', err?.message);
             return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
@@ -284,12 +286,18 @@ function ensureHandlers(client) {
         const resEmbed = new EmbedBuilder()
           .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
           .setTitle(isCorrect ? '**Correct!**' : '**Incorrect**')
-          .setDescription(`**Question:** ${question.question}`)
           .addFields(
-            { name: '**Your Answer:**', value: String(userAnswerRaw), inline: true },
-            { name: '**Accepted Answer(s):**', value: shownCorrect || '—', inline: true },
-          )
-          .setFooter({ text: 'Click “Explain” for a detailed explanation.' });
+            { name: '**Your Answer:**', value: userAnswer, inline: true },
+            {
+              name: '**Correct Answer(s):**',
+              value: Array.isArray(correctAnswers)
+              ? correctAnswers.join(', ')
+              : correctAnswers.toString(),
+              inline: true,
+            },
+            { name: '**Question ID:**', value: questionId, inline: false }
+        )
+        .setFooter({ text: 'Use /explain to explain the question!' });
 
         return i.reply({ embeds: [resEmbed], ephemeral: true });
       }
