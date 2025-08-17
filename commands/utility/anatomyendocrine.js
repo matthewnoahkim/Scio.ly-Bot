@@ -82,6 +82,7 @@ module.exports = {
       }
 
       const question = res.data.data[0];
+      console.log("question.base52=" + question.base52);
 
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
@@ -89,7 +90,6 @@ module.exports = {
         .setDescription(question.question);
 
       const fields = [];
-
       // Add answer choices if it's an MCQ
       if (question.options && question.options.length > 0) {
         const answerChoices = question.options
