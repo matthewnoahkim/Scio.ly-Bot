@@ -7,7 +7,7 @@ module.exports = {
     .setDescription('Check your answer to a question')
     .addStringOption(option =>
       option.setName('question_id')
-        .setDescription('Base-52 question ID (e.g., CuPaS)')
+        .setDescription('Question ID')
         .setRequired(true))
     .addStringOption(option =>
       option.setName('answer')
@@ -17,16 +17,11 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      // Public message (no ephemeral)
       await interaction.deferReply();
 
-      const questionIdRaw = interaction.options.getString('question_id');
-      const userAnswerRaw = interaction.options.getString('answer');
+      const questionId = interaction.options.getString('question_id').trim();
+      const userAnswer = interaction.options.getString('answer').trim();
 
-      const questionId = questionIdRaw.trim();
-      const userAnswer = userAnswerRaw.trim();
-
-      // --- Fetch question by base-52 id, handle 404 cleanly ---
       let question;
       try {
         const qRes = await axios.get(
@@ -41,23 +36,55 @@ module.exports = {
         if (err.response?.status === 404) {
           return interaction.editReply({ content: 'Question not found. Please check the question ID.' });
         }
-        throw err; // bubble up other errors
+        throw err;
       }
 
-      // ---------- Helpers ----------
+      const getQuestionText = (q) => {
+        const v = q?.question;
+        if (typeof v === 'string') return v;
+        if (v && typeof v === 'object') {
+          if (typeof v.text === 'string') return v.text;
+          if (typeof v.content === 'string') return v.content;
+          if (Array.isArray(v.parts)) return v.parts.join(' ');
+          return JSON.stringify(v);
+        }
+        return '—';
+      };
+
+      const getOptions = (q) => {
+        const opts = Array.isArray(q?.options) ? q.options : [];
+        return opts.map(o =>
+          typeof o === 'string' ? o
+          : (o?.text ?? o?.label ?? String(o))
+        );
+      };
+
+      const getAnswers = (q) => {
+        const raw = Array.isArray(q?.answers) ? q.answers
+                   : (q?.answers != null ? [q.answers] : []);
+        return raw.map(a =>
+          (typeof a === 'string' || typeof a === 'number') ? a
+          : (a?.text ?? a?.value ?? String(a))
+        );
+      };
+
+      const qText = getQuestionText(question);
+      const options = getOptions(question);
+      const answers = getAnswers(question);
+
       const isMCQ = (question.question_type?.toLowerCase() === 'mcq') ||
-                    (Array.isArray(question.options) && question.options.length > 0);
+                    (options.length > 0);
 
       const norm = (s) => String(s ?? '')
         .normalize('NFKC')
         .toLowerCase()
-        .replace(/['"‘’“”`]/g, '')       // strip quotes
-        .replace(/[^a-z0-9\s]/g, ' ')    // drop punctuation
-        .replace(/\b(the|a|an)\b/g, ' ') // drop articles
+        .replace(/['"‘’“”`]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\b(the|a|an)\b/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 
-      const letters = (n) => String.fromCharCode(65 + n); // 0 -> A
+      const letterOf = (idx) => String.fromCharCode(65 + idx); // 0 -> A
       const findIndexByText = (text, opts) => {
         const t = norm(text);
         for (let i = 0; i < opts.length; i++) {
@@ -66,7 +93,29 @@ module.exports = {
         return -1;
       };
 
-      const parseUserToLetters = (input, optsLen) => {
+      const buildCorrectLetterSet = (answersArr, opts) => {
+        const out = new Set();
+        for (const a of answersArr) {
+          if (typeof a === 'number' || (typeof a === 'string' && /^\d+$/.test(a))) {
+            const n = typeof a === 'number' ? a : parseInt(a, 10);
+            if (n >= 0 && n < opts.length) out.add(letterOf(n));        // 0-based
+            else if (n >= 1 && n <= opts.length) out.add(letterOf(n-1)); // 1-based
+            continue;
+          }
+          if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
+            const idx = a.toUpperCase().charCodeAt(0) - 65;
+            if (idx >= 0 && idx < opts.length) out.add(letterOf(idx));
+            continue;
+          }
+          if (typeof a === 'string') {
+            const idx = findIndexByText(a, opts);
+            if (idx !== -1) out.add(letterOf(idx));
+          }
+        }
+        return out;
+      };
+
+      const parseUserLetters = (input, optsLen, opts) => {
         const tokens = String(input)
           .split(/[^A-Za-z0-9]+/g)
           .filter(Boolean);
@@ -75,93 +124,62 @@ module.exports = {
         for (const raw of tokens) {
           const t = raw.trim();
 
-          // Letter?
           if (/^[A-Za-z]$/.test(t)) {
             const idx = t.toUpperCase().charCodeAt(0) - 65;
-            if (idx >= 0 && idx < optsLen) out.add(letters(idx));
+            if (idx >= 0 && idx < optsLen) out.add(letterOf(idx));
             continue;
           }
 
-          // Number? accept 1-based and 0-based
           if (/^\d+$/.test(t)) {
             const num = parseInt(t, 10);
-            if (num >= 1 && num <= optsLen) out.add(letters(num - 1));
-            else if (num >= 0 && num < optsLen) out.add(letters(num));
+            if (num >= 1 && num <= optsLen) out.add(letterOf(num - 1));
+            else if (num >= 0 && num < optsLen) out.add(letterOf(num));
             continue;
           }
         }
-        return out;
-      };
 
-      const buildCorrectLetters = (answers, options = []) => {
-        const out = new Set();
-        const arr = Array.isArray(answers) ? answers : (answers != null ? [answers] : []);
-        for (const a of arr) {
-          if (typeof a === 'number' || (typeof a === 'string' && /^\d+$/.test(a))) {
-            const n = typeof a === 'number' ? a : parseInt(a, 10);
-            if (n >= 0 && n < options.length) out.add(letters(n));        // 0-based
-            else if (n >= 1 && n <= options.length) out.add(letters(n-1)); // 1-based
-            continue;
-          }
-          if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
-            const idx = a.toUpperCase().charCodeAt(0) - 65;
-            if (idx >= 0 && idx < options.length) out.add(letters(idx));
-            continue;
-          }
-          if (typeof a === 'string' && options.length > 0) {
-            const idx = findIndexByText(a, options);
-            if (idx !== -1) out.add(letters(idx));
-          }
+        if (out.size === 0 && optsLen > 0) {
+          const idx = findIndexByText(input, opts);
+          if (idx !== -1) out.add(letterOf(idx));
         }
+
         return out;
       };
 
-      const formatCorrectForDisplay = (lettersSet, options = []) => {
+      const formatCorrectDisplay = (lettersSet, opts) => {
         if (!lettersSet || lettersSet.size === 0) return '—';
-        const items = [...lettersSet].sort().map(L => {
+        return [...lettersSet].sort().map(L => {
           const idx = L.charCodeAt(0) - 65;
-          const text = options[idx] ?? '';
+          const text = opts[idx] ?? '';
           return text ? `${L}) ${text}` : L;
-        });
-        return items.join(', ');
+        }).join(', ');
       };
 
-      // ---------- Grade ----------
       let isCorrect = false;
       let correctDisplay = '—';
 
       if (isMCQ) {
-        const options = Array.isArray(question.options) ? question.options : [];
-        const correctLetters = buildCorrectLetters(question.answers, options);
-        const userLetters = parseUserToLetters(userAnswer, options.length);
-
-        // If no A/B/C from user, try text-match against options
-        if (userLetters.size === 0 && options.length > 0) {
-          const idxFromText = findIndexByText(userAnswer, options);
-          if (idxFromText !== -1) userLetters.add(letters(idxFromText));
-        }
+        const correctLetters = buildCorrectLetterSet(answers, options);
+        const userLetters = parseUserLetters(userAnswer, options.length, options);
 
         const sameSize = userLetters.size === correctLetters.size;
         const allIn = [...userLetters].every(L => correctLetters.has(L));
         isCorrect = sameSize && allIn;
 
-        correctDisplay = formatCorrectForDisplay(correctLetters, options);
+        correctDisplay = formatCorrectDisplay(correctLetters, options);
 
       } else {
-        // FRQ: try AI endpoint first with a TRIMMED payload to avoid large bodies
-        const correctArr = Array.isArray(question.answers) ? question.answers
-                          : (question.answers != null ? [question.answers] : []);
-
         const trimmedQuestion = {
           id: question.id,
           base52: question.base52,
-          question: question.question,
+          question: qText,
           event: question.event,
           division: question.division,
           subtopics: question.subtopics,
           difficulty: question.difficulty
-          // (omit options, long fields, metadata, etc.)
         };
+
+        const correctArr = answers;
 
         let gradedOK = false;
         try {
@@ -171,7 +189,6 @@ module.exports = {
             { timeout: 20000, headers: { 'Content-Type': 'application/json' } }
           );
 
-          // Accept several possible shapes
           const payload = gradeResponse.data;
           const maybeArray =
             payload?.data ??
@@ -187,24 +204,22 @@ module.exports = {
             gradedOK = true;
           }
         } catch (e) {
-          // fall through to local grading
-          console.error('AI grade error:', e?.response?.status, e?.response?.data || e.message);
         }
 
-        // Fallback local grader (strict normalized equality against any expected)
         if (!gradedOK) {
           const u = norm(userAnswer);
           isCorrect = correctArr.some(ans => u && u.length > 0 && u === norm(ans));
         }
 
-        correctDisplay = correctArr.length ? correctArr.join(', ') : '—';
+        correctDisplay = correctArr.length
+          ? correctArr.map(a => (typeof a === 'string' ? a : String(a))).join(', ')
+          : '—';
       }
 
-      // ---------- Reply ----------
       const embed = new EmbedBuilder()
         .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
-        .setTitle(isCorrect ? '✅ Correct!' : '❌ Incorrect')
-        .setDescription(`**Question:** ${question.question ?? '—'}`)
+        .setTitle(isCorrect ? 'Correct!' : 'Wrong')
+        .setDescription(`**Question:** ${qText}`)
         .addFields(
           { name: 'Your Answer', value: userAnswer || '—', inline: true },
           { name: 'Correct Answer(s)', value: correctDisplay || '—', inline: true },
