@@ -11,7 +11,6 @@ const difficultyOptions = [
   "Hard (60-79%)",
   "Very Hard (80-100%)"
 ];
-
 const subtopicOptions = ["Hormones", "Glands", "Regulation", "Feedback", "Development"];
 
 const difficultyMap = {
@@ -22,17 +21,14 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// Normalize /api/questions payloads (array or object), return first question or null
 function pickFirstQuestion(data) {
   if (!data) return null;
   if (Array.isArray(data)) return data[0] || null;
-  if (Array.isArray(data.questions)) return data.questions[0] || null; // safety if API nests
-  // If a single question object was returned
+  if (Array.isArray(data.questions)) return data.questions[0] || null;
   if (data.id || data.base52 || data.question) return data;
   return null;
 }
 
-// Remove undefined/null so we don't send empty params
 function prune(obj) {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null));
 }
@@ -66,8 +62,8 @@ module.exports = {
     try {
       await interaction.deferReply();
 
-      const questionType = interaction.options.getString('question_type'); // "mcq" | "frq" | null
-      const division = interaction.options.getString('division');          // "B" | "C" | null
+      const questionType = interaction.options.getString('question_type'); 
+      const division = interaction.options.getString('division');         
       const difficultyLabel = interaction.options.getString('difficulty');
       const subtopic = interaction.options.getString('subtopic');
 
@@ -87,7 +83,6 @@ module.exports = {
         limit: 1
       });
 
-      // 1) Get one question via the list endpoint
       const listRes = await axios.get('https://scio.ly/api/questions', { params: baseParams, timeout: 15000 });
       if (!listRes.data?.success) {
         await interaction.editReply({ content: 'API error. Please try again later.' });
@@ -100,7 +95,6 @@ module.exports = {
         return;
       }
 
-      // 2) Guarantee base52 by fetching the detail endpoint if needed
       let question = first;
       if (!first.base52 && first.id) {
         try {
@@ -109,7 +103,6 @@ module.exports = {
             question = detailRes.data.data;
           }
         } catch {
-          // If detail fetch fails, we'll just show the UUID
         }
       }
 
@@ -131,7 +124,7 @@ module.exports = {
         { name: '**Division:**', value: String(question.division ?? '—'), inline: true },
         { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
         { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
-        { name: '**Question ID (base-52):**', value: String(question.base52 ?? question.id ?? '—'), inline: false }
+        { name: '**Question ID:**', value: String(question.base52 ?? question.id ?? '—'), inline: false }
       );
 
       embed.addFields(...fields);
