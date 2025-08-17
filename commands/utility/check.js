@@ -7,26 +7,32 @@ module.exports = {
     .setDescription('Check your answer to a question')
     .addStringOption(option =>
       option.setName('question_id')
-        .setDescription('Question ID')
+        .setDescription('Base-52 question ID (e.g., CuPaS)')
         .setRequired(true))
     .addStringOption(option =>
       option.setName('answer')
-        .setDescription('Your answer')
+        .setDescription('Your answer (e.g., A or A,C or text)')
         .setRequired(true)
     ),
 
   async execute(interaction) {
     try {
-      await interaction.deferReply({ ephemeral: true });
+      // Public message (no ephemeral)
+      await interaction.deferReply();
 
       const questionIdRaw = interaction.options.getString('question_id');
       const userAnswerRaw = interaction.options.getString('answer');
 
       const questionId = questionIdRaw.trim();
+      const userAnswer = userAnswerRaw.trim();
 
+      // --- Fetch question by base-52 id, handle 404 cleanly ---
       let question;
       try {
-        const qRes = await axios.get(`https://scio.ly/api/questions/base52/${encodeURIComponent(questionId)}`, { timeout: 15000 });
+        const qRes = await axios.get(
+          `https://scio.ly/api/questions/base52/${encodeURIComponent(questionId)}`,
+          { timeout: 15000 }
+        );
         if (!qRes.data?.success || !qRes.data.data) {
           return interaction.editReply({ content: 'Question not found. Please check the question ID.' });
         }
@@ -35,23 +41,27 @@ module.exports = {
         if (err.response?.status === 404) {
           return interaction.editReply({ content: 'Question not found. Please check the question ID.' });
         }
-        throw err;
+        throw err; // bubble up other errors
       }
 
+      // ---------- Helpers ----------
       const isMCQ = (question.question_type?.toLowerCase() === 'mcq') ||
                     (Array.isArray(question.options) && question.options.length > 0);
 
-      const normalize = (s) => String(s ?? '')
+      const norm = (s) => String(s ?? '')
         .normalize('NFKC')
-        .trim()
+        .toLowerCase()
+        .replace(/['"‘’“”`]/g, '')       // strip quotes
+        .replace(/[^a-z0-9\s]/g, ' ')    // drop punctuation
+        .replace(/\b(the|a|an)\b/g, ' ') // drop articles
         .replace(/\s+/g, ' ')
-        .toLowerCase();
+        .trim();
 
-      const letters = (n) => String.fromCharCode(65 + n);
+      const letters = (n) => String.fromCharCode(65 + n); // 0 -> A
       const findIndexByText = (text, opts) => {
-        const target = normalize(text);
+        const t = norm(text);
         for (let i = 0; i < opts.length; i++) {
-          if (normalize(opts[i]) === target) return i;
+          if (norm(opts[i]) === t) return i;
         }
         return -1;
       };
@@ -62,48 +72,43 @@ module.exports = {
           .filter(Boolean);
 
         const out = new Set();
-        for (const tRaw of tokens) {
-          const t = tRaw.trim();
+        for (const raw of tokens) {
+          const t = raw.trim();
 
+          // Letter?
           if (/^[A-Za-z]$/.test(t)) {
             const idx = t.toUpperCase().charCodeAt(0) - 65;
             if (idx >= 0 && idx < optsLen) out.add(letters(idx));
             continue;
           }
 
+          // Number? accept 1-based and 0-based
           if (/^\d+$/.test(t)) {
             const num = parseInt(t, 10);
             if (num >= 1 && num <= optsLen) out.add(letters(num - 1));
             else if (num >= 0 && num < optsLen) out.add(letters(num));
             continue;
           }
-
         }
         return out;
       };
 
       const buildCorrectLetters = (answers, options = []) => {
         const out = new Set();
-        const optsLen = options.length;
-
         const arr = Array.isArray(answers) ? answers : (answers != null ? [answers] : []);
         for (const a of arr) {
           if (typeof a === 'number' || (typeof a === 'string' && /^\d+$/.test(a))) {
             const n = typeof a === 'number' ? a : parseInt(a, 10);
-            if (optsLen > 0) {
-              if (n >= 0 && n < optsLen) out.add(letters(n));     
-              else if (n >= 1 && n <= optsLen) out.add(letters(n-1));
-            }
+            if (n >= 0 && n < options.length) out.add(letters(n));        // 0-based
+            else if (n >= 1 && n <= options.length) out.add(letters(n-1)); // 1-based
             continue;
           }
-
           if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
             const idx = a.toUpperCase().charCodeAt(0) - 65;
-            if (idx >= 0 && idx < optsLen) out.add(letters(idx));
+            if (idx >= 0 && idx < options.length) out.add(letters(idx));
             continue;
           }
-
-          if (typeof a === 'string' && optsLen > 0) {
+          if (typeof a === 'string' && options.length > 0) {
             const idx = findIndexByText(a, options);
             if (idx !== -1) out.add(letters(idx));
           }
@@ -121,15 +126,16 @@ module.exports = {
         return items.join(', ');
       };
 
+      // ---------- Grade ----------
       let isCorrect = false;
-      let correctDisplay = '';
-      const userAnswer = userAnswerRaw.trim();
+      let correctDisplay = '—';
 
       if (isMCQ) {
         const options = Array.isArray(question.options) ? question.options : [];
         const correctLetters = buildCorrectLetters(question.answers, options);
         const userLetters = parseUserToLetters(userAnswer, options.length);
 
+        // If no A/B/C from user, try text-match against options
         if (userLetters.size === 0 && options.length > 0) {
           const idxFromText = findIndexByText(userAnswer, options);
           if (idxFromText !== -1) userLetters.add(letters(idxFromText));
@@ -140,34 +146,64 @@ module.exports = {
         isCorrect = sameSize && allIn;
 
         correctDisplay = formatCorrectForDisplay(correctLetters, options);
+
       } else {
+        // FRQ: try AI endpoint first with a TRIMMED payload to avoid large bodies
+        const correctArr = Array.isArray(question.answers) ? question.answers
+                          : (question.answers != null ? [question.answers] : []);
+
+        const trimmedQuestion = {
+          id: question.id,
+          base52: question.base52,
+          question: question.question,
+          event: question.event,
+          division: question.division,
+          subtopics: question.subtopics,
+          difficulty: question.difficulty
+          // (omit options, long fields, metadata, etc.)
+        };
+
+        let gradedOK = false;
         try {
           const gradeResponse = await axios.post(
             'https://scio.ly/api/gemini/grade-free-responses',
-            {
-              freeResponses: [{
-                question,
-                correctAnswers: Array.isArray(question.answers) ? question.answers : (question.answers != null ? [question.answers] : []),
-                studentAnswer: userAnswer
-              }]
-            },
-            { timeout: 20000 }
+            { freeResponses: [{ question: trimmedQuestion, correctAnswers: correctArr, studentAnswer: userAnswer }] },
+            { timeout: 20000, headers: { 'Content-Type': 'application/json' } }
           );
 
-          const item = gradeResponse.data?.data?.[0];
-          isCorrect = Boolean(item?.isCorrect);
+          // Accept several possible shapes
+          const payload = gradeResponse.data;
+          const maybeArray =
+            payload?.data ??
+            payload?.graded ??
+            payload?.result ??
+            payload?.results ??
+            (Array.isArray(payload) ? payload : null) ??
+            (Array.isArray(payload?.data?.results) ? payload.data.results : null);
 
-          const raw = Array.isArray(question.answers) ? question.answers : (question.answers != null ? [question.answers] : []);
-          correctDisplay = raw.length ? raw.join(', ') : '—';
-        } catch (gradeError) {
-          console.error('Error grading FRQ:', gradeError);
-          return interaction.editReply({ content: 'Grading failed. Please try again in a few moments.' });
+          const first = Array.isArray(maybeArray) ? maybeArray[0] : null;
+          if (first && (typeof first.isCorrect === 'boolean' || typeof first.correct === 'boolean')) {
+            isCorrect = Boolean(first.isCorrect ?? first.correct);
+            gradedOK = true;
+          }
+        } catch (e) {
+          // fall through to local grading
+          console.error('AI grade error:', e?.response?.status, e?.response?.data || e.message);
         }
+
+        // Fallback local grader (strict normalized equality against any expected)
+        if (!gradedOK) {
+          const u = norm(userAnswer);
+          isCorrect = correctArr.some(ans => u && u.length > 0 && u === norm(ans));
+        }
+
+        correctDisplay = correctArr.length ? correctArr.join(', ') : '—';
       }
 
+      // ---------- Reply ----------
       const embed = new EmbedBuilder()
         .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
-        .setTitle(isCorrect ? 'Correct!' : 'Wrong')
+        .setTitle(isCorrect ? '✅ Correct!' : '❌ Incorrect')
         .setDescription(`**Question:** ${question.question ?? '—'}`)
         .addFields(
           { name: 'Your Answer', value: userAnswer || '—', inline: true },
