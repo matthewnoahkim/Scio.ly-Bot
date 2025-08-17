@@ -74,7 +74,7 @@ module.exports = {
       }
 
       const baseParams = prune({
-        event: 'Chemistry - Lab',
+        event: 'Chemistry Lab',
         division,
         difficulty_min,
         difficulty_max,
@@ -108,7 +108,7 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
-        .setTitle('Chemistry - Lab')
+        .setTitle('Chemistry Lab')
         .setDescription(question.question ?? '—');
 
       const fields = [];
