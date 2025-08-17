@@ -33,25 +33,16 @@ const difficultyMap = {
 };
 
 // ---- Utilities ----
-const prune = (obj) => Object.fromEntries(
-  Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '')
-);
+const prune = (obj) =>
+  Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
 const pickFirstQuestion = (arr) => Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
 
-// Normalize text for loose comparisons
+// Normalize for option-text matching
 const norm = (s) => String(s ?? '')
   .trim()
   .toUpperCase()
-  .replace(/[^\p{L}\p{N}.\-/% ]/gu, '') // keep letters, digits, ., -, /, %, space
+  .replace(/[^\p{L}\p{N}.\-/% ]/gu, '')
   .replace(/\s+/g, ' ');
-
-// Numeric-safe compare (handles floats like 3.14 vs "3.140")
-function numericEqual(a, b, tol = 1e-6) {
-  const x = Number(String(a).replace(/[^\d.\-]/g, ''));
-  const y = Number(String(b).replace(/[^\d.\-]/g, ''));
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-  return Math.abs(x - y) <= tol * Math.max(1, Math.abs(x), Math.abs(y));
-}
 
 // MCQ helpers
 function buildMcqHelpers(options = []) {
@@ -113,29 +104,7 @@ function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
   return new Set();
 }
 
-// FRQ: local quick check before calling grader
-function localFrqCorrect(userAns, rawAnswers) {
-  if (!rawAnswers || (Array.isArray(rawAnswers) && rawAnswers.length === 0)) return null;
-  const userN = norm(userAns);
-  const answers = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
-
-  for (const a of answers) {
-    const aN = norm(a);
-    if (!aN) continue;
-
-    // Exact normalized match
-    if (userN === aN) return true;
-
-    // Numeric equality tolerance
-    if (numericEqual(userAns, a)) return true;
-
-    // Contains check (avoid false positives on very short strings)
-    if (aN.length >= 4 && (userN.includes(aN) || aN.includes(userN))) return true;
-  }
-  return false;
-}
-
-// Gemini result interpretation for FRQ grading
+// Gemini FRQ grading truthiness
 function extractIsCorrect(result) {
   if (typeof result !== 'object' || result === null) return false;
   if (typeof result.isCorrect === 'boolean') return result.isCorrect;
@@ -145,24 +114,6 @@ function extractIsCorrect(result) {
   if (typeof result.grade === 'number') return result.grade >= 0.5;
   if (typeof result.pass === 'boolean') return result.pass;
   return false;
-}
-
-// Extract explanation string from various shapes
-function extractExplanation(payload) {
-  const d = payload?.data ?? payload;
-  if (typeof d === 'string') return d;
-  if (typeof d?.explanation === 'string') return d.explanation;
-  if (Array.isArray(d?.explanations) && typeof d.explanations[0] === 'string') return d.explanations[0];
-  if (typeof d?.text === 'string') return d.text;
-  if (typeof payload?.message === 'string') return payload.message;
-  return '';
-}
-
-// Chunk text to fit embed field limits
-function chunkText(s, max = 1000) {
-  const parts = [];
-  for (let i = 0; i < s.length; i += max) parts.push(s.slice(i, i + max));
-  return parts;
 }
 
 function makeKey() {
@@ -201,7 +152,7 @@ function ensureHandlers(client) {
         return;
       }
 
-      // Explain button → call explain endpoint (send only the question; strip answers)
+      // Explain button → call explain endpoint (ONLY the question; strip answers). Output ONLY explanation.
       if (i.isButton() && i.customId.startsWith('ae:explain:')) {
         // customId: ae:explain:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
@@ -214,50 +165,35 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        let explanationText = '';
         try {
           const { answers, ...questionNoAnswers } = question || {};
-          const body = { question: questionNoAnswers }; // << only question
-          const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
-          explanationText = extractExplanation(r.data);
+          const body = { question: questionNoAnswers }; // exactly per your spec
+          const r = await axios.post('https://scio.ly/api/gemini/explain', body);
+
+          if (!r.data?.success) {
+            return i.reply({ content: 'Explanation failed. Please try again in a few moments.', ephemeral: true });
+          }
+
+          let explanationText =
+            (typeof r.data?.data === 'string' && r.data.data) ||
+            r.data?.data?.explanation ||
+            (Array.isArray(r.data?.data?.explanations) ? r.data.data.explanations[0] : null) ||
+            r.data?.data?.text ||
+            r.data?.message ||
+            'No explanation available.';
+
+          if (explanationText.length > 4096) explanationText = explanationText.slice(0, 4093) + '...';
+
+          const exEmbed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle('Explanation')
+            .setDescription(explanationText);
+
+          return i.reply({ embeds: [exEmbed], ephemeral: true });
         } catch (err) {
           console.error('Explain API error:', err?.message);
+          return i.reply({ content: 'Explanation failed. Please try again in a few moments.', ephemeral: true });
         }
-
-        // Fallback: if API returns nothing, show the accepted answers or MCQ keys
-        if (!explanationText) {
-          if (Array.isArray(question.options) && question.options.length > 0) {
-            // MCQ fallback: display correct letters + text
-            const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
-            const idxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
-            if (idxSet.size > 0) {
-              const letters = [...idxSet].sort((a,b)=>a-b).map(indexToLetter);
-              const lines = [...idxSet].sort((a,b)=>a-b).map(i => `**${indexToLetter(i)})** ${question.options[i]}`);
-              explanationText = `**Correct choice(s): ${letters.join(', ')}**\n\n${lines.join('\n')}`;
-            } else {
-              const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
-              explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
-            }
-          } else {
-            const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
-            explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
-          }
-        }
-
-        // Trim & chunk to fit embed
-        if (explanationText.length > 3900) explanationText = explanationText.slice(0, 3900) + '…';
-        const chunks = chunkText(explanationText, 1000);
-
-        const exEmbed = new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle('Explanation')
-          .setDescription(`**Question:** ${question.question}`);
-
-        chunks.forEach((c, ix) => {
-          exEmbed.addFields({ name: ix === 0 ? 'Details' : 'Details (cont.)', value: c });
-        });
-
-        return i.reply({ embeds: [exEmbed], ephemeral: true });
       }
 
       // Modal submit → grade
@@ -274,14 +210,14 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // Cache last answer for potential explain tailoring (we don't send it, but you might want it later)
+        // Cache last answer (kept in case you later want to use it)
         i.client._aeLastAnswer.set(key, userAnswerRaw);
 
         let isCorrect = false;
         let shownCorrect = '';
 
         if (Array.isArray(question.options) && question.options.length > 0) {
-          // MCQ
+          // -------- MCQ: local grading only --------
           const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
           const correctIdxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
           const userIdxSet = parseUserMcqAnswer(userAnswerRaw, tokenToIndex);
@@ -305,34 +241,28 @@ function ensureHandlers(client) {
             isCorrect = false;
           }
         } else {
-          // FRQ → local check first, then API fallback
-          const local = localFrqCorrect(userAnswerRaw, question.answers);
-          if (local === true) {
-            isCorrect = true;
-          } else {
-            try {
-              const gradeRes = await axios.post(
-                'https://scio.ly/api/gemini/grade-free-responses',
-                {
-                  freeResponses: [{
-                    question,
-                    correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
-                    studentAnswer: userAnswerRaw,
-                  }],
-                },
-                { timeout: 30000 }
-              );
-              const arr = gradeRes?.data?.data;
-              if (gradeRes?.data?.success && Array.isArray(arr) && arr.length > 0) {
-                const result = arr[0];
-                isCorrect = extractIsCorrect(result);
-              } else {
-                isCorrect = local === true; // stick with local if API returned nothing usable
+          // -------- FRQ: AI grading ONLY --------
+          try {
+            const gradeRes = await axios.post(
+              'https://scio.ly/api/gemini/grade-free-responses',
+              {
+                freeResponses: [{
+                question: question,
+                correctAnswers: Array.isArray(question.answers) ? question.answers : [question.answers],
+                studentAnswer: userAnswer,
+                }],
               }
-            } catch (err) {
-              console.error('FRQ grading error:', err?.message);
-              isCorrect = local === true; // stick with local if API fails
+            );
+            const arr = gradeRes?.data?.data;
+            if (gradeRes?.data?.success && Array.isArray(arr) && arr.length > 0) {
+              const result = arr[0];
+              isCorrect = extractIsCorrect(result);
+            } else {
+              return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
             }
+          } catch (err) {
+            console.error('FRQ grading error:', err?.message);
+            return i.reply({ content: 'Grading failed. Please try again in a few moments.', ephemeral: true });
           }
 
           const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
