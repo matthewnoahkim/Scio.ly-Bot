@@ -219,11 +219,11 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
         .setTitle(isCorrect ? 'Correct!' : 'Wrong')
-        .setDescription(`**Question:** ${qText}`)
+        .setDescription(`**Question:** ${question.question}`)
         .addFields(
-          { name: 'Your Answer', value: userAnswer || '—', inline: true },
-          { name: 'Correct Answer(s)', value: correctDisplay || '—', inline: true },
-          { name: 'Question ID', value: question.base52 || questionId, inline: false }
+          { name: 'Your Answer', value: userAnswer},
+          { name: 'Correct Answer(s)', value: Array.isArray(correctAnswers) ? correctAnswers.join(', ') : correctAnswers.toString(), inline: true},
+          { name: 'Question ID', value: question.base52, inline: false }
         )
         .setFooter({ text: 'Use /explain to explain the question!' });
 
