@@ -12,7 +12,7 @@ const {
 const axios = require('axios');
 const crypto = require('crypto');
 
-// ---- Config choices (match your slash command options) ----
+// ---- Config choices ----
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
@@ -32,7 +32,7 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// ---- Small utilities ----
+// ---- Utilities ----
 const prune = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '')
 );
@@ -41,7 +41,7 @@ const clean = (s) => String(s).trim().toUpperCase()
   .replace(/[^\p{L}\p{N} ]/gu, '')
   .replace(/\s+/g, ' ');
 
-// Build robust helpers for MCQ normalization
+// MCQ helpers
 function buildMcqHelpers(options = []) {
   const letters = Array.from({ length: options.length }, (_, i) => String.fromCharCode(65 + i)); // A,B,C...
   const textUpper = options.map(clean);
@@ -49,20 +49,16 @@ function buildMcqHelpers(options = []) {
   const letterToIndex = Object.fromEntries(letters.map((L, i) => [L, i]));
   const textToIndex = Object.fromEntries(textUpper.map((t, i) => [t, i]));
 
-  // Normalize ANY token (number, letter, or text) to an index
   const tokenToIndex = (tok) => {
     if (tok == null) return null;
     const raw = String(tok).trim();
-    // numeric: accept both 0-based and 1-based
     if (/^\d+$/.test(raw)) {
       const n = parseInt(raw, 10);
       if (n >= 0 && n < options.length) return n;      // 0-based
       if (n >= 1 && n <= options.length) return n - 1; // 1-based
     }
-    // letter
     const L = raw.toUpperCase()[0];
     if (letterToIndex[L] !== undefined) return letterToIndex[L];
-    // text
     const txt = clean(raw);
     if (textToIndex[txt] !== undefined) return textToIndex[txt];
     return null;
@@ -72,7 +68,6 @@ function buildMcqHelpers(options = []) {
   return { tokenToIndex, indexToLetter };
 }
 
-// Parse user MCQ answer into a set of indices (supports multi-answer like "A C" or "1,3,Reefs")
 function parseUserMcqAnswer(ans, tokenToIndex) {
   const parts = String(ans).split(/[,\s]+/).filter(Boolean);
   const idxs = new Set();
@@ -83,15 +78,12 @@ function parseUserMcqAnswer(ans, tokenToIndex) {
   return idxs;
 }
 
-// Resolve API "answers" to indices (handles numbers, letters, or text)
 function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
   const arr = Array.isArray(rawAnswers) ? rawAnswers : [rawAnswers];
 
-  // Try mapping as-is
   let mapped = arr.map(a => tokenToIndex(a));
   if (mapped.every(i => i !== null && i >= 0 && i < optionCount)) return new Set(mapped);
 
-  // If mapping failed, attempt 1-based assumption for pure numeric strings
   const numeric = arr.every(a => /^\d+$/.test(String(a).trim()));
   if (numeric) {
     mapped = arr.map(a => {
@@ -103,30 +95,26 @@ function resolveCorrectIndices(rawAnswers, tokenToIndex, optionCount) {
     if (mapped.every(i => i !== null)) return new Set(mapped);
   }
 
-  // Fail open — caller will show raw answers
   return new Set();
 }
 
-// Generate a short random key to track which question the modal should grade
 function makeKey() {
   return crypto.randomBytes(8).toString('hex'); // 16 chars
 }
 
-// Install one-time handlers (button + modal). Cache question objects in-memory.
+// ---- One-time handlers: button + modal + explain ----
 function ensureHandlers(client) {
   if (client._aeHandlersInstalled) return;
   client._aeHandlersInstalled = true;
-  client._aeQuestionCache = new Map(); // key: random token -> question object
+  client._aeQuestionCache = new Map(); // key -> question object
+  client._aeLastAnswer = new Map();    // key -> last user answer (string)
 
   client.on('interactionCreate', async (i) => {
     try {
-      // Button → open modal
+      // Submit Answer button → show modal
       if (i.isButton() && i.customId.startsWith('ae:answer:')) {
-        // customId: ae:answer:<key>:by:<userId>
-        const parts = i.customId.split(':');
-        const key = parts[2];
-        const ownerId = parts[4];
-
+        // ae:answer:<key>:by:<userId>
+        const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This question wasn't generated for you.", ephemeral: true });
         }
@@ -137,7 +125,7 @@ function ensureHandlers(client) {
 
         const input = new TextInputBuilder()
           .setCustomId('answer_input')
-          .setLabel('Your answer (A/B/C/D, 1/2/3/4, or text)')
+          .setLabel('Your answer (A/B/C/etc., or text)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true);
 
@@ -146,28 +134,74 @@ function ensureHandlers(client) {
         return;
       }
 
-      // Modal → grade
-      if (i.isModalSubmit() && i.customId.startsWith('ae:submit:')) {
-        // customId: ae:submit:<key>:by:<userId>
-        const parts = i.customId.split(':');
-        const key = parts[2];
-        const ownerId = parts[4];
-
+      // Explain button → call explain endpoint
+      if (i.isButton() && i.customId.startsWith('ae:explain:')) {
+        // ae:explain:<key>:by:<userId>
+        const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
-          return i.reply({ content: "This form isn't for you.", ephemeral: true });
+          return i.reply({ content: "This explanation isn't for you.", ephemeral: true });
         }
 
-        const userAnswerRaw = i.fields.getTextInputValue('answer_input');
-
-        // Must have the question in cache (no IDs used).
         const question = i.client._aeQuestionCache.get(key);
         if (!question) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // ---- Grade ----
+        // If user already submitted an answer, include it; otherwise omit
+        const maybeAnswer = i.client._aeLastAnswer.get(key);
+        let explanation = '';
+
+        try {
+          const body = {
+            question, // per docs
+            ...(maybeAnswer ? { userAnswer: maybeAnswer } : {}),
+            event: question.event
+          };
+          const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
+
+          // Be defensive about shape
+          explanation =
+            r.data?.data?.explanation ??
+            r.data?.data?.text ??
+            (Array.isArray(r.data?.data?.explanations) ? r.data.data.explanations[0] : undefined) ??
+            r.data?.message ??
+            'No explanation provided.';
+
+        } catch (err) {
+          console.error('Explain error:', err?.message);
+          return i.reply({ content: 'Failed to generate an explanation. Please try again shortly.', ephemeral: true });
+        }
+
+        // Trim explanation if it’s too long for an embed description
+        if (explanation.length > 3900) explanation = explanation.slice(0, 3900) + '…';
+
+        const exEmbed = new EmbedBuilder()
+          .setColor(0x5865F2)
+          .setTitle('Explanation')
+          .setDescription(`**Question:** ${question.question}\n\n${explanation}`);
+
+        return i.reply({ embeds: [exEmbed], ephemeral: true });
+      }
+
+      // Modal submit → grade
+      if (i.isModalSubmit() && i.customId.startsWith('ae:submit:')) {
+        // ae:submit:<key>:by:<userId>
+        const [, , key, , ownerId] = i.customId.split(':');
+        if (ownerId && i.user.id !== ownerId) {
+          return i.reply({ content: "This form isn't for you.", ephemeral: true });
+        }
+
+        const userAnswerRaw = i.fields.getTextInputValue('answer_input');
+        const question = i.client._aeQuestionCache.get(key);
+        if (!question) {
+          return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
+        }
+
+        // keep last answer for the explain call
+        i.client._aeLastAnswer.set(key, userAnswerRaw);
+
         let isCorrect = false;
-        let shownCorrect = ''; // what we display as correct answer(s)
+        let shownCorrect = '';
 
         if (Array.isArray(question.options) && question.options.length > 0) {
           // MCQ
@@ -182,21 +216,19 @@ function ensureHandlers(client) {
             if (correctSorted.length === 1) {
               isCorrect = userSorted.length === 1 && userSorted[0] === correctSorted[0];
             } else {
-              // require an exact set match for multi-answer questions
               isCorrect = userSorted.length === correctSorted.length &&
                           correctSorted.every((v, idx) => v === userSorted[idx]);
             }
 
             shownCorrect = correctSorted.map(indexToLetter).join(', ');
           } else {
-            // Fall back to raw answers (text/letters)
+            // fallback to raw answers
             const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
             shownCorrect = raw.map(a => String(a)).join(', ');
-            // Can't auto-grade reliably; mark incorrect unless exact raw match (rare)
             isCorrect = false;
           }
         } else {
-          // FRQ – use documented grading endpoint
+          // FRQ → grade via API
           try {
             const gradeRes = await axios.post(
               'https://scio.ly/api/gemini/grade-free-responses',
@@ -227,12 +259,11 @@ function ensureHandlers(client) {
         const resEmbed = new EmbedBuilder()
           .setColor(isCorrect ? 0x00FF00 : 0xFF0000)
           .setTitle(isCorrect ? '**Correct!**' : '**Incorrect**')
-          .setDescription(`**Question:** ${question.question}`)
           .addFields(
             { name: '**Your Answer:**', value: String(userAnswerRaw), inline: true },
             { name: '**Correct Answer(s):**', value: shownCorrect || '—', inline: true },
           )
-          .setFooter({ text: 'Use /explain to get a detailed explanation.' });
+          .setFooter({ text: 'Click “Explain” for a detailed explanation.' });
 
         return i.reply({ embeds: [resEmbed], ephemeral: true });
       }
@@ -269,7 +300,7 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      ensureHandlers(interaction.client); // install one-time handlers
+      ensureHandlers(interaction.client);
       await interaction.deferReply();
 
       const questionType = interaction.options.getString('question_type');
@@ -305,7 +336,6 @@ module.exports = {
         return;
       }
 
-      // Cache the question under a random key (no IDs exposed)
       const key = makeKey();
       interaction.client._aeQuestionCache.set(key, question);
 
@@ -316,7 +346,6 @@ module.exports = {
         .addFields(
           ...(Array.isArray(question.options) && question.options.length > 0
             ? [{
-                name: '**Answer Choices:**',
                 value: question.options.map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`).join('\n'),
                 inline: false,
               }]
@@ -325,16 +354,20 @@ module.exports = {
           { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
           { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
         )
-        .setFooter({ text: 'Click “Submit Answer” to answer.' });
+        .setFooter({ text: 'Use the buttons below.' });
 
-      const components = new ActionRowBuilder().addComponents(
+      const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`ae:answer:${key}:by:${interaction.user.id}`)
           .setStyle(ButtonStyle.Primary)
           .setLabel('Submit Answer'),
+        new ButtonBuilder()
+          .setCustomId(`ae:explain:${key}:by:${interaction.user.id}`)
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Explain'),
       );
 
-      await interaction.editReply({ embeds: [embed], components: [components] });
+      await interaction.editReply({ embeds: [embed], components: [row] });
 
     } catch (err) {
       console.error('Error in Anatomy Endocrine command:', err);
