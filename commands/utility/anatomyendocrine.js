@@ -11,6 +11,7 @@ const difficultyOptions = [
   "Hard (60-79%)",
   "Very Hard (80-100%)"
 ];
+
 const subtopicOptions = ["Hormones", "Glands", "Regulation", "Feedback", "Development"];
 
 const difficultyMap = {
@@ -20,18 +21,6 @@ const difficultyMap = {
   "Hard (60-79%)": { min: 0.6, max: 0.79 },
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
-
-function pickFirstQuestion(data) {
-  if (!data) return null;
-  if (Array.isArray(data)) return data[0] || null;
-  if (Array.isArray(data.questions)) return data.questions[0] || null;
-  if (data.id || data.base52 || data.question) return data;
-  return null;
-}
-
-function prune(obj) {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null));
-}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -95,17 +84,6 @@ module.exports = {
         return;
       }
 
-      let question = first;
-      if (!first.base52 && first.id) {
-        try {
-          const detailRes = await axios.get(`https://scio.ly/api/questions/${first.id}`, { timeout: 15000 });
-          if (detailRes.data?.success && detailRes.data.data) {
-            question = detailRes.data.data;
-          }
-        } catch {
-        }
-      }
-
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
         .setTitle('Anatomy - Endocrine')
@@ -124,7 +102,7 @@ module.exports = {
         { name: '**Division:**', value: String(question.division ?? '—'), inline: true },
         { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
         { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
-        { name: '**Question ID:**', value: String(question.base52 ?? question.id ?? '—'), inline: false }
+        { name: '**Question ID:**', value: String(question.base52 ?? '—'), inline: false }
       );
 
       embed.addFields(...fields);
