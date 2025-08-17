@@ -346,6 +346,7 @@ module.exports = {
         .addFields(
           ...(Array.isArray(question.options) && question.options.length > 0
             ? [{
+                name: '**Answer Choices:**',
                 value: question.options.map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`).join('\n'),
                 inline: false,
               }]
