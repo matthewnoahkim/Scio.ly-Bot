@@ -23,7 +23,7 @@ module.exports = {
             const userAnswer = interaction.options.getString('answer');
 
             const questionResponse = await axios.get(
-                `https://scio.ly/api/questions/base52/${encodeURIComponent(questionId)}`
+                `https://scio.ly/api/questions/base52/${questionId}`
             );
 
             if (!questionResponse.data.success) {
