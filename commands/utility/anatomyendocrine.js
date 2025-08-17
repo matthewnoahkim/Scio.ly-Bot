@@ -135,7 +135,7 @@ function localFrqCorrect(userAns, rawAnswers) {
   return false;
 }
 
-// Gemini result interpretation
+// Gemini result interpretation for FRQ grading
 function extractIsCorrect(result) {
   if (typeof result !== 'object' || result === null) return false;
   if (typeof result.isCorrect === 'boolean') return result.isCorrect;
@@ -147,7 +147,7 @@ function extractIsCorrect(result) {
   return false;
 }
 
-// Extract explanation text from various shapes
+// Extract explanation string from various shapes
 function extractExplanation(payload) {
   const d = payload?.data ?? payload;
   if (typeof d === 'string') return d;
@@ -158,7 +158,7 @@ function extractExplanation(payload) {
   return '';
 }
 
-// Chunk text to fit embed limits
+// Chunk text to fit embed field limits
 function chunkText(s, max = 1000) {
   const parts = [];
   for (let i = 0; i < s.length; i += max) parts.push(s.slice(i, i + max));
@@ -166,7 +166,7 @@ function chunkText(s, max = 1000) {
 }
 
 function makeKey() {
-  return crypto.randomBytes(8).toString('hex');
+  return crypto.randomBytes(8).toString('hex'); // 16 chars
 }
 
 // ---- One-time handlers ----
@@ -178,8 +178,9 @@ function ensureHandlers(client) {
 
   client.on('interactionCreate', async (i) => {
     try {
-      // Submit Answer
+      // Submit Answer button → show modal
       if (i.isButton() && i.customId.startsWith('ae:answer:')) {
+        // customId: ae:answer:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This question wasn't generated for you.", ephemeral: true });
@@ -200,8 +201,9 @@ function ensureHandlers(client) {
         return;
       }
 
-      // Explain
+      // Explain button → call explain endpoint (send only the question; strip answers)
       if (i.isButton() && i.customId.startsWith('ae:explain:')) {
+        // customId: ae:explain:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This explanation isn't for you.", ephemeral: true });
@@ -212,26 +214,20 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        const maybeAnswer = i.client._aeLastAnswer.get(key);
         let explanationText = '';
-
         try {
-          const body = {
-            question,
-            ...(maybeAnswer ? { userAnswer: maybeAnswer } : {}),
-            event: question.event
-          };
+          const { answers, ...questionNoAnswers } = question || {};
+          const body = { question: questionNoAnswers }; // << only question
           const r = await axios.post('https://scio.ly/api/gemini/explain', body, { timeout: 30000 });
           explanationText = extractExplanation(r.data);
         } catch (err) {
-          // network/API error → fall back below
           console.error('Explain API error:', err?.message);
         }
 
-        // Fallback local explanation if needed
+        // Fallback: if API returns nothing, show the accepted answers or MCQ keys
         if (!explanationText) {
           if (Array.isArray(question.options) && question.options.length > 0) {
-            // MCQ fallback: show correct letter(s) and text
+            // MCQ fallback: display correct letters + text
             const { tokenToIndex, indexToLetter } = buildMcqHelpers(question.options);
             const idxSet = resolveCorrectIndices(question.answers, tokenToIndex, question.options.length);
             if (idxSet.size > 0) {
@@ -243,13 +239,15 @@ function ensureHandlers(client) {
               explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
             }
           } else {
-            // FRQ fallback: list acceptable answers
             const raw = Array.isArray(question.answers) ? question.answers : [question.answers];
             explanationText = `**Accepted answer(s):** ${raw.map(String).join(', ')}`;
           }
         }
 
+        // Trim & chunk to fit embed
+        if (explanationText.length > 3900) explanationText = explanationText.slice(0, 3900) + '…';
         const chunks = chunkText(explanationText, 1000);
+
         const exEmbed = new EmbedBuilder()
           .setColor(0x5865F2)
           .setTitle('Explanation')
@@ -264,6 +262,7 @@ function ensureHandlers(client) {
 
       // Modal submit → grade
       if (i.isModalSubmit() && i.customId.startsWith('ae:submit:')) {
+        // customId: ae:submit:<key>:by:<userId>
         const [, , key, , ownerId] = i.customId.split(':');
         if (ownerId && i.user.id !== ownerId) {
           return i.reply({ content: "This form isn't for you.", ephemeral: true });
@@ -275,7 +274,7 @@ function ensureHandlers(client) {
           return i.reply({ content: 'This question has expired. Please run the command again.', ephemeral: true });
         }
 
-        // cache last answer for explain
+        // Cache last answer for potential explain tailoring (we don't send it, but you might want it later)
         i.client._aeLastAnswer.set(key, userAnswerRaw);
 
         let isCorrect = false;
@@ -306,13 +305,11 @@ function ensureHandlers(client) {
             isCorrect = false;
           }
         } else {
-          // FRQ
-          // 1) Local check first
+          // FRQ → local check first, then API fallback
           const local = localFrqCorrect(userAnswerRaw, question.answers);
           if (local === true) {
             isCorrect = true;
           } else {
-            // 2) Fallback to API
             try {
               const gradeRes = await axios.post(
                 'https://scio.ly/api/gemini/grade-free-responses',
@@ -330,13 +327,11 @@ function ensureHandlers(client) {
                 const result = arr[0];
                 isCorrect = extractIsCorrect(result);
               } else {
-                // If API didn’t give a usable answer, fall back to local result (may be false or null)
-                isCorrect = local === true;
+                isCorrect = local === true; // stick with local if API returned nothing usable
               }
             } catch (err) {
               console.error('FRQ grading error:', err?.message);
-              // If grading fails, stick with local decision
-              isCorrect = local === true;
+              isCorrect = local === true; // stick with local if API fails
             }
           }
 
