@@ -112,22 +112,26 @@ module.exports = {
           inline: true
         },
         {
+          name: '**Difficulty:**',
+          value: `${Math.round(question.difficulty * 100)}%`,
+          inline: true
+        },
+        {
           name: '**Subtopic(s):**',
           value: Array.isArray(question.subtopics) && question.subtopics.length > 0
             ? question.subtopics.join(', ')
             : 'None',
           inline: true
         },
-        // Show the base52 id straight from the API
         {
-          name: '**Question ID (base52):**',
-          value: question.base52 || 'Unavailable',
+          name: '**Question ID:**',
+          value: question.base52,
           inline: false
         }
       );
 
       embed.addFields(...fields);
-      embed.setFooter({ text: 'Use /check with the base52 ID to check your answer!' });
+      embed.setFooter({ text: 'Use /check to check your answer!' });
 
       await interaction.editReply({ embeds: [embed] });
 
