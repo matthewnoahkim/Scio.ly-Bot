@@ -8,11 +8,13 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  ComponentType,
+  MessageFlags,
 } = require('discord.js');
 const axios = require('axios');
+const crypto = require('crypto');
 
-const API_BASE = 'https://scio.ly';
-
+// ---- Options UI ----
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
@@ -26,51 +28,70 @@ const subtopicOptions = ["Hormones", "Glands", "Regulation", "Feedback", "Develo
 
 const difficultyMap = {
   "Very Easy (0-19%)": { min: 0.0, max: 0.19 },
-  "Easy (20-39%)": { min: 0.2, max: 0.39 },
-  "Medium (40-59%)": { min: 0.4, max: 0.59 },
-  "Hard (60-79%)": { min: 0.6, max: 0.79 },
+  "Easy (20-39%)":    { min: 0.2, max: 0.39 },
+  "Medium (40-59%)":  { min: 0.4, max: 0.59 },
+  "Hard (60-79%)":    { min: 0.6, max: 0.79 },
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// ---------- helpers ----------
-function getCorrectMcqIndex(question) {
-  const opts = question.options || [];
-  const answers = Array.isArray(question.answers)
-    ? question.answers
-    : (question.answers ? [question.answers] : []);
-  if (!opts.length || !answers.length) return { index: null, letter: null };
+// ---- Helpers ----
+const BASE_URL = 'https://scio.ly';
 
-  const first = answers[0];
+function letterFromIndex(i) {
+  return String.fromCharCode(65 + i);
+}
 
-  // Number -> could be 0- or 1-based
-  if (typeof first === 'number') {
-    if (first >= 0 && first < opts.length) return { index: first, letter: String.fromCharCode(65 + first) };
-    if (first >= 1 && first <= opts.length) return { index: first - 1, letter: String.fromCharCode(64 + first) };
+function normalize(str) {
+  return String(str).toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Attempts to compute the correct MCQ option index from the question payload.
+ * Supports several possible forms (index, 1-based index, letter, or option text).
+ * Returns { index, letter, text } or null if undetermined.
+ */
+function resolveCorrectMcq(question) {
+  if (!question || !Array.isArray(question.options) || question.options.length === 0) return null;
+  const opts = question.options;
+  const answers = question.answers;
+
+  // Prefer first answer if multiple are present (typical MCQ)
+  let a = Array.isArray(answers) && answers.length ? answers[0] : answers;
+
+  // If number (0-based or 1-based)
+  if (typeof a === 'number' && Number.isInteger(a)) {
+    let idx = (a >= 0 && a < opts.length) ? a : (a >= 1 && a <= opts.length ? a - 1 : -1);
+    if (idx >= 0) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
   }
 
-  if (typeof first === 'string') {
-    const s = first.trim();
-    // Letter (A/B/...)
-    if (/^[A-Za-z]$/.test(s)) {
-      const idx = s.toUpperCase().charCodeAt(0) - 65;
-      if (idx >= 0 && idx < opts.length) return { index: idx, letter: s.toUpperCase() };
+  // If letter like 'A'
+  if (typeof a === 'string' && a.length === 1 && /[A-Za-z]/.test(a)) {
+    const idx = a.toUpperCase().charCodeAt(0) - 65;
+    if (idx >= 0 && idx < opts.length) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
+  }
+
+  // If text matching an option
+  if (typeof a === 'string' && a.length > 1) {
+    const n = normalize(a);
+    const idx = opts.findIndex(o => normalize(o) === n);
+    if (idx !== -1) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
+  }
+
+  // If answers is an array of strings and one matches an option
+  if (Array.isArray(answers)) {
+    for (const cand of answers) {
+      if (typeof cand === 'string') {
+        const n = normalize(cand);
+        const idx = opts.findIndex(o => normalize(o) === n);
+        if (idx !== -1) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
+      }
     }
-    // Exact option text match
-    const idx2 = opts.findIndex(o => String(o).trim().toLowerCase() === s.toLowerCase());
-    if (idx2 !== -1) return { index: idx2, letter: String.fromCharCode(65 + idx2) };
   }
 
-  return { index: null, letter: null };
+  return null;
 }
 
-function normalizeUserMcqLetter(input) {
-  if (!input) return null;
-  const m = String(input).trim().match(/[A-Za-z]/);
-  return m ? m[0].toUpperCase() : null;
-}
-
-// ---------- command export ----------
-const command = {
+module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomyendocrine')
     .setDescription('Get an Anatomy - Endocrine question')
@@ -78,26 +99,30 @@ const command = {
       option.setName('question_type')
         .setDescription('Question type (leave blank for random)')
         .setRequired(false)
-        .addChoices(...questionTypeOptions.map(q => ({ name: q, value: q.toLowerCase() }))))
+        .addChoices(...questionTypeOptions.map(q => ({ name: q, value: q.toLowerCase() })))
+    )
     .addStringOption(option =>
       option.setName('division')
         .setDescription('Division (leave blank for random)')
         .setRequired(false)
-        .addChoices(...divisionOptions.map(d => ({ name: d, value: d.split(' ')[1] }))))
+        .addChoices(...divisionOptions.map(d => ({ name: d, value: d.split(' ')[1] })))
+    )
     .addStringOption(option =>
       option.setName('difficulty')
         .setDescription('Difficulty (leave blank for random)')
         .setRequired(false)
-        .addChoices(...difficultyOptions.map(d => ({ name: d, value: d }))))
+        .addChoices(...difficultyOptions.map(d => ({ name: d, value: d })))
+    )
     .addStringOption(option =>
       option.setName('subtopic')
         .setDescription('Subtopic (leave blank for random)')
         .setRequired(false)
-        .addChoices(...subtopicOptions.map(s => ({ name: s, value: s })))),
+        .addChoices(...subtopicOptions.map(s => ({ name: s, value: s })))
+    ),
 
   async execute(interaction) {
     try {
-      await interaction.deferReply();
+      await interaction.deferReply(); // public reply
 
       const questionType = interaction.options.getString('question_type'); // 'mcq' | 'frq' | null
       const division = interaction.options.getString('division'); // 'B' | 'C' | null
@@ -110,248 +135,230 @@ const command = {
         difficulty_max = difficultyMap[difficultyLabel].max;
       }
 
-      const params = {
+      const query = {
         event: 'Anatomy - Endocrine',
         division,
         difficulty_min,
         difficulty_max,
         subtopic,
-        question_type: questionType, // 'mcq'/'frq'
+        question_type: questionType, // expects 'mcq' or 'frq'
         limit: 1
       };
 
-      const res = await axios.get(`${API_BASE}/api/questions`, { params });
+      const res = await axios.get(`${BASE_URL}/api/questions`, { params: query });
 
       if (!res.data?.success || !res.data?.data || res.data.data.length === 0) {
-        await interaction.editReply('No questions found matching your criteria. Try different filters.');
+        await interaction.editReply({
+          content: 'No questions found matching your criteria. Try different filters.'
+        });
         return;
       }
 
-      const q = res.data.data[0];
+      const question = res.data.data[0];
+      const isMcq = Array.isArray(question.options) && question.options.length > 0;
 
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
         .setTitle('Anatomy - Endocrine')
-        .setDescription(q.question);
+        .setDescription(question.question || 'Question text unavailable');
 
       const fields = [];
 
-      if (Array.isArray(q.options) && q.options.length > 0) {
-        const answerChoices = q.options
-          .map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`)
+      if (isMcq) {
+        const answerChoices = question.options
+          .map((opt, i) => `${letterFromIndex(i)}) ${opt}`)
           .join('\n');
-        fields.push({ name: '**Answer Choices:**', value: answerChoices, inline: false });
+        fields.push({ name: 'Answer Choices', value: answerChoices, inline: false });
       }
 
-      if (q.division) {
-        fields.push({ name: '**Division:**', value: String(q.division), inline: true });
-      }
+      const pct = (typeof question.difficulty === 'number' && !Number.isNaN(question.difficulty))
+        ? `${Math.round(question.difficulty * 100)}%`
+        : 'N/A';
 
       fields.push(
-        {
-          name: '**Difficulty:**',
-          value: typeof q.difficulty === 'number' ? `${Math.round(q.difficulty * 100)}%` : 'N/A',
+        { name: 'Division', value: question.division || division || 'N/A', inline: true },
+        { name: 'Difficulty', value: pct, inline: true },
+        { name: 'Subtopic(s)', value: (Array.isArray(question.subtopics) && question.subtopics.length)
+            ? question.subtopics.join(', ')
+            : (subtopic || 'None'),
           inline: true
-        },
-        {
-          name: '**Subtopic(s):**',
-          value: Array.isArray(q.subtopics) && q.subtopics.length ? q.subtopics.join(', ') : 'None',
-          inline: true
-        },
+        }
       );
 
-      embed.addFields(...fields);
-      embed.setFooter({ text: 'Use the buttons below to check your answer or get an explanation.' });
+      embed.addFields(fields);
+      embed.setFooter({ text: 'Use the buttons below.' });
+
+      // Buttons (with a per-message nonce so we can distinguish multiple instances)
+      const nonce = crypto.randomBytes(4).toString('hex');
+      const CHECK_ID = `ae_check_${nonce}`;
+      const EXPLAIN_ID = `ae_explain_${nonce}`;
+      const modalId = `ae_modal_${nonce}`;
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`ae:check:${q.id}`)
+          .setCustomId(CHECK_ID)
           .setLabel('Check answer')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
-          .setCustomId(`ae:explain:${q.id}`)
+          .setCustomId(EXPLAIN_ID)
           .setLabel('Explain question')
           .setStyle(ButtonStyle.Primary)
       );
 
-      await interaction.editReply({ embeds: [embed], components: [row] });
-    } catch (err) {
-      console.error('Error in /anatomyendocrine:', err?.response?.data || err);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply('Command failed. Please try again later.');
-      } else {
-        await interaction.reply({ content: 'Command failed. Please try again later.', ephemeral: true });
-      }
-    }
-  },
-};
+      const sent = await interaction.editReply({ embeds: [embed], components: [row] });
 
-// ---------- global handlers exported from same file ----------
-async function handleButton(interaction) {
-  if (!interaction.isButton()) return false;
-  const id = interaction.customId;
-  if (!id.startsWith('ae:')) return false;
-
-  const [, action, qid] = id.split(':'); // ae:check:<id> | ae:explain:<id>
-  if (!action || !qid) return false;
-
-  try {
-    // Always pull the freshest copy
-    const qRes = await axios.get(`${API_BASE}/api/questions/${qid}`);
-    const q = qRes.data?.data;
-    if (!q) {
-      await interaction.reply({ ephemeral: true, content: 'Could not find that question anymore.' });
-      return true;
-    }
-
-    if (action === 'explain') {
-      await interaction.deferReply({ ephemeral: true });
-
-      const payload = {
-        question: {
-          question: q.question,
-          options: q.options || [],
-          answers: q.answers || [],
-          difficulty: q.difficulty,
-          subtopics: q.subtopics || [],
-          event: q.event,
-          division: q.division
-        }
-      };
-
-      try {
-        const explRes = await axios.post(`${API_BASE}/api/gemini/explain`, payload);
-        const explanation =
-          explRes.data?.data?.explanation ||
-          explRes.data?.data ||
-          'No explanation available.';
-        await interaction.editReply(
-          `**Explanation:**\n${typeof explanation === 'string' ? explanation : JSON.stringify(explanation, null, 2)}`
-        );
-      } catch (e) {
-        console.error('Explain error:', e?.response?.data || e);
-        await interaction.editReply('Sorry, I couldn’t fetch an explanation right now.');
-      }
-      return true;
-    }
-
-    if (action === 'check') {
-      // Show a modal (acknowledges within 3s)
-      const modal = new ModalBuilder()
-        .setCustomId(`ae:modal:${qid}`)
-        .setTitle('Submit your answer');
-
-      const prompt = Array.isArray(q.options) && q.options.length > 0
-        ? 'Enter the letter of your answer (A, B, C, ...)'
-        : 'Enter your answer';
-
-      const input = new TextInputBuilder()
-        .setCustomId('user_answer')
-        .setLabel(prompt)
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true);
-
-      const row = new ActionRowBuilder().addComponents(input);
-      modal.addComponents(row);
-
-      await interaction.showModal(modal);
-      return true;
-    }
-
-    return false;
-  } catch (err) {
-    console.error('handleButton error:', err?.response?.data || err);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ ephemeral: true, content: 'Something went wrong handling that action.' });
-    }
-    return true;
-  }
-}
-
-async function handleModal(interaction) {
-  if (!interaction.isModalSubmit()) return false;
-  if (!interaction.customId.startsWith('ae:modal:')) return false;
-
-  const qid = interaction.customId.split(':')[2];
-  try {
-    await interaction.deferReply({ ephemeral: true });
-
-    const qRes = await axios.get(`${API_BASE}/api/questions/${qid}`);
-    const q = qRes.data?.data;
-    if (!q) {
-      await interaction.editReply('Could not find that question anymore.');
-      return true;
-    }
-
-    const userAnswerRaw = interaction.fields.getTextInputValue('user_answer') || '';
-    const userAnswer = String(userAnswerRaw).trim();
-
-    const isMcq = Array.isArray(q.options) && q.options.length > 0;
-
-    if (isMcq) {
-      const { index: correctIdx, letter: correctLetter } = getCorrectMcqIndex(q);
-      if (correctIdx == null || !correctLetter) {
-        await interaction.editReply('Sorry, I could not determine the correct answer for this question.');
-        return true;
-      }
-      const userLetter = normalizeUserMcqLetter(userAnswer);
-      const isCorrect = userLetter === correctLetter;
-      const correctText = q.options[correctIdx];
-
-      await interaction.editReply(
-        [
-          isCorrect ? '✅ **Correct!**' : '❌ **Incorrect.**',
-          '',
-          `**Your answer:** ${userLetter || userAnswer}`,
-          `**Correct answer:** ${correctLetter}) ${correctText}`
-        ].join('\n')
-      );
-      return true;
-    }
-
-    // FRQ: use Gemini grader
-    try {
-      const gradeRes = await axios.post(`${API_BASE}/api/gemini/grade-free-responses`, {
-        freeResponses: [{
-          question: q.question,
-          correctAnswers: q.answers || [],
-          studentAnswer: userAnswer
-        }]
+      // Collector for this message so we don't need a global InteractionCreate handler for buttons
+      const collector = sent.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 24 * 60 * 60 * 1000, // 24h; allows pressing any number of times within this window
       });
 
-      const result = Array.isArray(gradeRes.data?.data)
-        ? gradeRes.data.data[0]
-        : (gradeRes.data?.data || gradeRes.data);
+      collector.on('collect', async (btnInt) => {
+        try {
+          // Only proceed for clicks on this message
+          if (btnInt.message.id !== sent.id) return;
 
-      const isCorrect = !!(result?.isCorrect ?? result?.correct ?? result?.passed);
-      const feedback = result?.feedback || result?.explanation || result?.reason || null;
+          // ---- CHECK ANSWER FLOW ----
+          if (btnInt.customId === CHECK_ID) {
+            // Build modal
+            const modal = new ModalBuilder()
+              .setCustomId(modalId)
+              .setTitle('Check Your Answer');
 
-      await interaction.editReply(
-        [
-          isCorrect ? '✅ **Marked correct!**' : '❌ **Marked incorrect.**',
-          '',
-          `**Your answer:** ${userAnswer}`,
-          q.answers && q.answers.length ? `**Expected (reference):** ${q.answers.join(' | ')}` : '',
-          feedback ? `\n**Feedback:** ${feedback}` : ''
-        ].filter(Boolean).join('\n')
-      );
-    } catch (e) {
-      console.error('FRQ grading error:', e?.response?.data || e);
-      await interaction.editReply('Sorry, I couldn’t grade that right now. Please try again in a moment.');
+            const input = new TextInputBuilder()
+              .setCustomId('answerInput')
+              .setLabel(isMcq
+                ? 'Enter your answer letter (A, B, C, ...)'
+                : 'Enter your free-response answer')
+              .setPlaceholder(isMcq ? 'e.g., B' : 'Type your answer here')
+              .setStyle(isMcq ? TextInputStyle.Short : TextInputStyle.Paragraph)
+              .setRequired(true);
+
+            const modalRow = new ActionRowBuilder().addComponents(input);
+            modal.addComponents(modalRow);
+
+            await btnInt.showModal(modal);
+
+            // Wait for the user's modal submit
+            const submitted = await btnInt.awaitModalSubmit({
+              time: 5 * 60 * 1000, // 5 minutes to submit
+              filter: (i) => i.customId === modalId && i.user.id === btnInt.user.id
+            });
+
+            const userAnswerRaw = submitted.fields.getTextInputValue('answerInput') || '';
+            const userAnswer = userAnswerRaw.trim();
+
+            if (isMcq) {
+              // Grade MCQ by letter
+              const correct = resolveCorrectMcq(question);
+              if (!correct) {
+                await submitted.reply({
+                  content: 'Sorry, I could not determine the correct answer for this question.',
+                  flags: MessageFlags.Ephemeral
+                });
+                return;
+              }
+
+              const userLetter = userAnswer.slice(0, 1).toUpperCase();
+              const isCorrect = userLetter === correct.letter;
+
+              await submitted.reply({
+                content: `${isCorrect ? '✅ Correct!' : '❌ Incorrect.'}\n**Your answer:** ${userLetter}\n**Correct answer:** ${correct.letter}) ${correct.text}`,
+                flags: MessageFlags.Ephemeral
+              });
+            } else {
+              // Grade FRQ using API
+              try {
+                const body = {
+                  freeResponses: [{
+                    question, // send the whole question object for context
+                    correctAnswers: Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
+                    studentAnswer: userAnswer
+                  }]
+                };
+
+                const gradeRes = await axios.post(`${BASE_URL}/api/gemini/grade-free-responses`, body, {
+                  headers: { 'Content-Type': 'application/json' }
+                });
+
+                const payload = gradeRes.data?.data;
+                const result = Array.isArray(payload) ? payload[0] : (payload?.result || payload);
+
+                const isCorrect =
+                  (typeof result?.isCorrect === 'boolean' && result.isCorrect) ||
+                  (typeof result?.correct === 'boolean' && result.correct) ||
+                  (typeof result?.score === 'number' ? result.score >= 0.5 : false);
+
+                const correctAnswers = Array.isArray(question.answers) ? question.answers
+                  : (question.answers ? [question.answers] : []);
+
+                const correctLine = correctAnswers.length
+                  ? correctAnswers.join(' | ')
+                  : 'N/A';
+
+                await submitted.reply({
+                  content: `${isCorrect ? '✅ Likely correct!' : '❌ Likely incorrect.'}\n**Your answer:** ${userAnswer}\n**Expected answer(s):** ${correctLine}`,
+                  flags: MessageFlags.Ephemeral
+                });
+              } catch (err) {
+                console.error('FRQ grading error:', err?.response?.data || err);
+                const msg = err?.response?.status === 429
+                  ? 'Rate limit exceeded. Please try again in a few moments.'
+                  : 'Grading failed. Please try again later.';
+                await submitted.reply({ content: msg, flags: MessageFlags.Ephemeral });
+              }
+            }
+            return;
+          }
+
+          // ---- EXPLAIN QUESTION FLOW ----
+          if (btnInt.customId === EXPLAIN_ID) {
+            await btnInt.deferReply({ ephemeral: true });
+            try {
+              const explainRes = await axios.post(
+                `${BASE_URL}/api/gemini/explain`,
+                { question, event: 'Anatomy - Endocrine' },
+                { headers: { 'Content-Type': 'application/json' } }
+              );
+
+              // Explanation could be in different shapes; try common ones
+              const d = explainRes.data?.data;
+              const expl = d?.explanation || d?.text || d?.message || (typeof d === 'string' ? d : null);
+
+              await btnInt.editReply({
+                content: expl || 'No explanation available for this question right now.'
+              });
+            } catch (err) {
+              console.error('Explain error:', err?.response?.data || err);
+              const msg = err?.response?.status === 429
+                ? 'Rate limit exceeded. Please try again in a few moments.'
+                : 'Failed to generate an explanation. Please try again later.';
+              await btnInt.editReply({ content: msg });
+            }
+            return;
+          }
+        } catch (err) {
+          // Defensive catch to avoid unhandled rejections
+          console.error('Button/modal handling error:', err);
+          try {
+            if (!btnInt.replied && !btnInt.deferred) {
+              await btnInt.reply({ content: 'Something went wrong handling that action.', flags: MessageFlags.Ephemeral });
+            }
+          } catch {}
+        }
+      });
+
+      collector.on('end', () => {
+        // No action needed; buttons will remain but won’t respond after collector stops.
+      });
+
+    } catch (err) {
+      console.error('Error in Anatomy Endocrine command:', err?.response?.data || err);
+      if (err?.response?.status === 429) {
+        await interaction.editReply({ content: 'Rate limit exceeded. Please try again in a few moments.' });
+      } else {
+        await interaction.editReply({ content: 'Command failed. Please try again later.' });
+      }
     }
-
-    return true;
-  } catch (err) {
-    console.error('handleModal error:', err?.response?.data || err);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ ephemeral: true, content: 'Something went wrong handling that action.' });
-    }
-    return true;
   }
-}
-
-module.exports = {
-  ...command,
-  handleButton,
-  handleModal,
 };
