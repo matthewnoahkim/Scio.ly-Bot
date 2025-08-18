@@ -24,7 +24,6 @@ const api = axios.create({
   baseURL: BASE_URL,
   headers: {
     'X-API-Key': API_KEY,
-    'Authorization': `Bearer ${API_KEY}`,
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   },
