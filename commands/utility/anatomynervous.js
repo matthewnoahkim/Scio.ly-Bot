@@ -21,6 +21,15 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
+// Axios client configured for scio.ly with API key header
+const api = axios.create({
+  baseURL: 'https://scio.ly',
+  headers: {
+    'X-API-Key': process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq',
+    'Content-Type': 'application/json'
+  },
+});
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomynervous')
@@ -71,8 +80,9 @@ module.exports = {
         limit: 1
       };
 
-      const res = await axios.get('http://scioly-api.vercel.app/api/questions', { params: query });
-      
+      // Use new API base + header
+      const res = await api.get('/api/questions', { params: query });
+
       if (!res.data.success || !res.data.data || res.data.data.length === 0) {
         await interaction.editReply({
           content: 'No questions found matching your criteria. Try different filters.',
@@ -90,12 +100,11 @@ module.exports = {
 
       const fields = [];
 
-      // Add answer choices if it's an MCQ
       if (question.options && question.options.length > 0) {
         const answerChoices = question.options
           .map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`)
           .join('\n');
-        
+
         fields.push({
           name: '**Answer Choices:**',
           value: answerChoices,
@@ -128,7 +137,7 @@ module.exports = {
 
     } catch (err) {
       console.error('Error in Anatomy Nervous command:', err);
-      
+
       if (err.response && err.response.status === 429) {
         await interaction.editReply({
           content: 'Rate limit exceeded. Please try again in a few moments.',

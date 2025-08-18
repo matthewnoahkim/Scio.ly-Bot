@@ -285,7 +285,7 @@ module.exports = {
                         studentAnswer: userAnswer
                       }]
                     };
-                    const gradeRes = await api.post('/api/gemini/grade-free-responses', body);
+                    const gradeRes = await api.get('/api/gemini/grade-free-responses', { params: body });
 
                     // Try to interpret the result shape
                     const payload = gradeRes.data?.data;
@@ -326,7 +326,7 @@ module.exports = {
             await btnInt.deferReply({ ephemeral: true });
             try {
               // Only send the question object per your requirement
-              const explainRes = await api.post('/api/gemini/explain', { question });
+              const explainRes = await api.get('/api/gemini/explain', { params: { question } });
 
               // Pull a reasonable explanation field
               const d = explainRes.data?.data;
