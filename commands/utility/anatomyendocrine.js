@@ -8,132 +8,142 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ComponentType,
 } = require('discord.js');
 const axios = require('axios');
-const crypto = require('crypto');
 
-// =========================
-// Config / Constants
-// =========================
-const BASE_URL = 'https://scio.ly';
-const API_KEY = 'xo9IKNJG65e0LMBa55Tq'; // consider moving to an env var
+// ---------- Config ----------
+const API_BASE = 'https://scio.ly';
+const API_KEY = process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq';
+const FRQ_CORRECT_THRESHOLD =
+  Number.isFinite(Number(process.env.SCIO_FRQ_CORRECT_THRESHOLD))
+    ? Number(process.env.SCIO_FRQ_CORRECT_THRESHOLD)
+    : 0.75;
 
-// Pre-configured axios instance with auth headers
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: API_BASE,
   headers: {
-    'X-API-Key': API_KEY,
     'Content-Type': 'application/json',
-    'Accept': 'application/json',
+    ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
   },
-  timeout: 20_000,
 });
 
-// =========================
-const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division B", "Division C"];
+// Store per-message question state so our buttons/modals work without touching your global InteractionCreate
+const questionState = new Map();
+
+// ---------- Options / UI ----------
+const questionTypeOptions = ['MCQ', 'FRQ'];
+const divisionOptions = ['Division B', 'Division C'];
 const difficultyOptions = [
-  "Very Easy (0-19%)",
-  "Easy (20-39%)",
-  "Medium (40-59%)",
-  "Hard (60-79%)",
-  "Very Hard (80-100%)"
+  'Very Easy (0-19%)',
+  'Easy (20-39%)',
+  'Medium (40-59%)',
+  'Hard (60-79%)',
+  'Very Hard (80-100%)',
 ];
-const subtopicOptions = ["Hormones", "Glands", "Regulation", "Feedback", "Development"];
+const subtopicOptions = ['Hormones', 'Glands', 'Regulation', 'Feedback', 'Development'];
 
 const difficultyMap = {
-  "Very Easy (0-19%)": { min: 0.0, max: 0.19 },
-  "Easy (20-39%)":    { min: 0.2, max: 0.39 },
-  "Medium (40-59%)":  { min: 0.4, max: 0.59 },
-  "Hard (60-79%)":    { min: 0.6, max: 0.79 },
-  "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
+  'Very Easy (0-19%)': { min: 0.0, max: 0.19 },
+  'Easy (20-39%)': { min: 0.2, max: 0.39 },
+  'Medium (40-59%)': { min: 0.4, max: 0.59 },
+  'Hard (60-79%)': { min: 0.6, max: 0.79 },
+  'Very Hard (80-100%)': { min: 0.8, max: 1.0 },
 };
 
-// Helpers
-const letterFromIndex = (i) => String.fromCharCode(65 + i);
-const normalize = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+// ---------- Helpers ----------
+function formatChoices(options = []) {
+  return options.map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`).join('\n');
+}
+function percentFromDifficulty(d) {
+  const n = typeof d === 'number' ? d : 0;
+  return `${Math.round(n * 100)}%`;
+}
+function resolveCorrectIndex(question) {
+  const options = question.options || [];
 
-/** Resolve MCQ correct answer to {index, letter, text} if possible */
-function resolveCorrectMcq(question) {
-  if (!question || !Array.isArray(question.options) || question.options.length === 0) return null;
-  const opts = question.options;
-  const answers = question.answers;
-
-  let a = Array.isArray(answers) && answers.length ? answers[0] : answers;
-
-  // numeric index (0- or 1-based)
-  if (Number.isInteger(a)) {
-    let idx = (a >= 0 && a < opts.length) ? a : (a >= 1 && a <= opts.length ? a - 1 : -1);
-    if (idx >= 0) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
+  if (typeof question.correctIndex === 'number') {
+    const idx = question.correctIndex;
+    return { index: Number.isInteger(idx) ? idx : null, text: options[idx] ?? null };
   }
 
-  // letter A/B/C...
-  if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
-    const idx = a.toUpperCase().charCodeAt(0) - 65;
-    if (idx >= 0 && idx < opts.length) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
-  }
+  const answers = Array.isArray(question.answers)
+    ? question.answers
+    : question.answers != null
+    ? [question.answers]
+    : [];
 
-  // exact text match
-  if (typeof a === 'string' && a.length > 1) {
-    const n = normalize(a);
-    const idx = opts.findIndex(o => normalize(o) === n);
-    if (idx !== -1) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
-  }
+  const first = answers[0];
 
-  // any matching text in array
-  if (Array.isArray(answers)) {
-    for (const cand of answers) {
-      if (typeof cand === 'string') {
-        const n = normalize(cand);
-        const idx = opts.findIndex(o => normalize(o) === n);
-        if (idx !== -1) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
-      }
-    }
+  if (typeof first === 'number' && Number.isInteger(first)) {
+    const idx = first;
+    return { index: idx, text: options[idx] ?? null };
   }
+  if (typeof first === 'string' && /^[A-Za-z]$/.test(first.trim())) {
+    const idx = first.trim().toUpperCase().charCodeAt(0) - 65;
+    return { index: idx, text: options[idx] ?? null };
+  }
+  if (typeof first === 'string' && options.length) {
+    const idx = options.findIndex(
+      (o) => String(o).trim().toLowerCase() === first.trim().toLowerCase()
+    );
+    if (idx !== -1) return { index: idx, text: options[idx] };
+  }
+  return { index: null, text: null };
+}
+function userMcqIndex(input, options = []) {
+  if (!input) return null;
+  const trimmed = String(input).trim();
 
-  return null;
+  const letterParen = trimmed.match(/^([A-H])\)/i);
+  if (letterParen) return letterParen[1].toUpperCase().charCodeAt(0) - 65;
+
+  const letter = trimmed.match(/^[A-H]/i);
+  if (letter) return letter[0].toUpperCase().charCodeAt(0) - 65;
+
+  const idx = options.findIndex(
+    (o) => String(o).trim().toLowerCase() === trimmed.toLowerCase()
+  );
+  return idx === -1 ? null : idx;
 }
 
+// ---------- Command ----------
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomyendocrine')
     .setDescription('Get an Anatomy - Endocrine question')
-    .addStringOption(option =>
-      option.setName('question_type')
+    .addStringOption((option) =>
+      option
+        .setName('question_type')
         .setDescription('Question type (leave blank for random)')
         .setRequired(false)
-        .addChoices(...questionTypeOptions.map(q => ({ name: q, value: q.toLowerCase() })))
+        .addChoices(...questionTypeOptions.map((q) => ({ name: q, value: q.toLowerCase() })))
     )
-    .addStringOption(option =>
-      option.setName('division')
+    .addStringOption((option) =>
+      option
+        .setName('division')
         .setDescription('Division (leave blank for random)')
         .setRequired(false)
-        .addChoices(...divisionOptions.map(d => ({ name: d, value: d.split(' ')[1] })))
+        .addChoices(...divisionOptions.map((d) => ({ name: d, value: d.split(' ')[1] })))
     )
-    .addStringOption(option =>
-      option.setName('difficulty')
+    .addStringOption((option) =>
+      option
+        .setName('difficulty')
         .setDescription('Difficulty (leave blank for random)')
         .setRequired(false)
-        .addChoices(...difficultyOptions.map(d => ({ name: d, value: d })))
+        .addChoices(...difficultyOptions.map((d) => ({ name: d, value: d })))
     )
-    .addStringOption(option =>
-      option.setName('subtopic')
+    .addStringOption((option) =>
+      option
+        .setName('subtopic')
         .setDescription('Subtopic (leave blank for random)')
         .setRequired(false)
-        .addChoices(...subtopicOptions.map(s => ({ name: s, value: s })))
+        .addChoices(...subtopicOptions.map((s) => ({ name: s, value: s })))
     ),
 
   async execute(interaction) {
-    // Reply immediately to avoid "Unknown interaction"
-    let placeholderMsg;
     try {
-      placeholderMsg = await interaction.reply({ content: 'Fetching question…', fetchReply: true });
-    } catch {
-      try { await interaction.deferReply(); } catch {}
-    }
+      await interaction.deferReply(); // public
 
-    try {
       const questionType = interaction.options.getString('question_type'); // 'mcq' | 'frq' | null
       const division = interaction.options.getString('division'); // 'B' | 'C' | null
       const difficultyLabel = interaction.options.getString('difficulty');
@@ -145,236 +155,300 @@ module.exports = {
         difficulty_max = difficultyMap[difficultyLabel].max;
       }
 
-      const params = {
+      // Fetch one question
+      const query = {
         event: 'Anatomy - Endocrine',
         division,
         difficulty_min,
         difficulty_max,
         subtopic,
-        question_type: questionType, // expects 'mcq' or 'frq'
-        limit: 1
+        question_type: questionType,
+        limit: 1,
       };
 
-      const res = await api.get('/api/questions', { params });
+      const res = await api.get('/api/questions', { params: query });
 
       if (!res.data?.success || !res.data?.data || res.data.data.length === 0) {
-        const msg = 'No questions found matching your criteria. Try different filters.';
-        if (interaction.replied || interaction.deferred) {
-          await interaction.editReply({ content: msg, embeds: [], components: [] });
-        } else {
-          await interaction.reply({ content: msg, ephemeral: true });
-        }
+        await interaction.editReply({
+          content: 'No questions found matching your criteria. Try different filters.',
+        });
         return;
       }
 
-      const question = res.data.data[0];
+      const question = res.data.data[0] || {};
       const isMcq = Array.isArray(question.options) && question.options.length > 0;
 
+      // Build embed
       const embed = new EmbedBuilder()
-        .setColor(0x0099FF)
+        .setColor(0x0099ff)
         .setTitle('Anatomy - Endocrine')
-        .setDescription(question.question || 'Question text unavailable');
+        .setDescription(question.question || '—');
 
       const fields = [];
 
       if (isMcq) {
-        const answerChoices = question.options
-          .map((opt, i) => `${letterFromIndex(i)}) ${opt}`)
-          .join('\n');
-        fields.push({ name: 'Answer Choices', value: answerChoices, inline: false });
+        fields.push({
+          name: '**Answer Choices:**',
+          value: formatChoices(question.options),
+          inline: false,
+        });
       }
 
-      const pct = (typeof question.difficulty === 'number' && !Number.isNaN(question.difficulty))
-        ? `${Math.round(question.difficulty * 100)}%`
-        : 'N/A';
-
       fields.push(
-        { name: 'Division', value: question.division || division || 'N/A', inline: true },
-        { name: 'Difficulty', value: pct, inline: true },
-        { name: 'Subtopic(s)', value: (Array.isArray(question.subtopics) && question.subtopics.length)
-            ? question.subtopics.join(', ')
-            : (subtopic || 'None'),
-          inline: true
+        {
+          name: '**Division:**',
+          value: String(question.division || division || '—'),
+          inline: true,
+        },
+        {
+          name: '**Difficulty:**',
+          value: percentFromDifficulty(question.difficulty),
+          inline: true,
+        },
+        {
+          name: '**Subtopic(s):**',
+          value:
+            (Array.isArray(question.subtopics) && question.subtopics.length
+              ? question.subtopics.join(', ')
+              : question.subtopic || 'None') || 'None',
+          inline: false,
         }
       );
 
-      embed.addFields(fields);
-      embed.setFooter({ text: 'Use the buttons below.' });
-
-      // Unique IDs for this message run
-      const nonce = crypto.randomBytes(4).toString('hex');
-      const CHECK_ID = `ae_check_${nonce}`;
-      const EXPLAIN_ID = `ae_explain_${nonce}`;
-      const MODAL_ID = `ae_modal_${nonce}`;
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(CHECK_ID)
-          .setLabel('Check answer')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(EXPLAIN_ID)
-          .setLabel('Explain question')
-          .setStyle(ButtonStyle.Primary)
-      );
-
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({ content: '', embeds: [embed], components: [row] });
-      } else {
-        await interaction.reply({ embeds: [embed], components: [row] });
-      }
-
-      const message = placeholderMsg ?? await interaction.fetchReply();
-      const collector = message.createMessageComponentCollector({
-        componentType: ComponentType.Button,
-        time: 24 * 60 * 60 * 1000, // 24h
+      embed.addFields(fields).setFooter({
+        text: 'Use the buttons below to check your answer or get an explanation.',
       });
 
-      collector.on('collect', async (btnInt) => {
+      // Buttons
+      const buttons = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ae_check_answer')
+          .setLabel('Check Answer')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('ae_explain')
+          .setLabel('Explain Question')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const msg = await interaction.editReply({ embeds: [embed], components: [buttons] });
+
+      // Store state for this message
+      questionState.set(msg.id, {
+        question,
+        createdAt: Date.now(),
+      });
+
+      // Collector: keep it alive for a long session; both buttons can be pressed any number of times
+      const collector = msg.createMessageComponentCollector({
+        time: 6 * 60 * 60 * 1000, // 6 hours
+      });
+
+      collector.on('collect', async (btnInteraction) => {
         try {
-          if (btnInt.customId === CHECK_ID) {
-            // Modal for user answer
+          if (!['ae_check_answer', 'ae_explain'].includes(btnInteraction.customId)) return;
+
+          const state = questionState.get(msg.id);
+          if (!state) {
+            await btnInteraction.reply({
+              ephemeral: true,
+              content: 'This question session expired. Please run the command again.',
+            });
+            return;
+          }
+
+          // Hard TTL to avoid grading very old questions
+          if (Date.now() - state.createdAt > 24 * 60 * 60 * 1000) {
+            await btnInteraction.reply({
+              ephemeral: true,
+              content:
+                'This question is over a day old. Please run the command again for a fresh session.',
+            });
+            return;
+          }
+
+          const q = state.question || {};
+          const isMcqLocal = Array.isArray(q.options) && q.options.length > 0;
+
+          if (btnInteraction.customId === 'ae_explain') {
+            await btnInteraction.deferReply({ ephemeral: true });
+            try {
+              // Per your spec: only send the question object
+              const explainRes = await api.post('/api/gemini/explain', {
+                question: q,
+              });
+              const expl = explainRes?.data?.data?.explanation || 'No explanation available.';
+              await btnInteraction.editReply({
+                content: `**Explanation:**\n${String(expl).slice(0, 1900)}`,
+              });
+            } catch (e) {
+              console.error('Explain error:', e?.response?.data || e);
+              const msg =
+                e?.response?.status === 429
+                  ? 'Rate limit exceeded. Please try again in a few moments.'
+                  : 'Failed to get an explanation. Please try again later.';
+              await btnInteraction.editReply({ content: msg });
+            }
+            return;
+          }
+
+          if (btnInteraction.customId === 'ae_check_answer') {
+            // Show modal for the user's answer
             const modal = new ModalBuilder()
-              .setCustomId(MODAL_ID)
-              .setTitle('Check Your Answer');
+              .setCustomId(`ae_modal_${msg.id}`)
+              .setTitle(isMcqLocal ? 'Enter your answer letter' : 'Enter your answer');
 
             const input = new TextInputBuilder()
-              .setCustomId('answerInput')
-              .setLabel(isMcq ? 'Enter your answer letter (A, B, C, ...)' : 'Enter your free-response answer')
-              .setPlaceholder(isMcq ? 'e.g., B' : 'Type your answer here')
-              .setStyle(isMcq ? TextInputStyle.Short : TextInputStyle.Paragraph)
-              .setRequired(true);
+              .setCustomId('user_answer')
+              .setLabel(isMcqLocal ? 'Your Answer (e.g., A, B, C...)' : 'Your Answer')
+              .setRequired(true)
+              .setStyle(isMcqLocal ? TextInputStyle.Short : TextInputStyle.Paragraph)
+              .setPlaceholder(isMcqLocal ? 'A' : 'Type your free-response answer');
 
             modal.addComponents(new ActionRowBuilder().addComponents(input));
-            await btnInt.showModal(modal);
 
-            // One-shot modal listener for the same user
-            const client = btnInt.client;
-            const userId = btnInt.user.id;
+            await btnInteraction.showModal(modal);
 
-            const onModal = async (i) => {
-              if (!i.isModalSubmit()) return;
-              if (i.customId !== MODAL_ID) return;
-              if (i.user.id !== userId) return;
+            const submitted = await btnInteraction.awaitModalSubmit({
+              time: 2 * 60 * 1000,
+              filter: (i) =>
+                i.customId === `ae_modal_${msg.id}` && i.user.id === btnInteraction.user.id,
+            });
+
+            const userAnswerRaw = submitted.fields.getTextInputValue('user_answer') || '';
+            const userAnswer = userAnswerRaw.trim();
+
+            if (isMcqLocal) {
+              const options = q.options || [];
+              const { index: correctIndex } = resolveCorrectIndex(q);
+              const userIndex = userMcqIndex(userAnswer, options);
+
+              const correctLetter =
+                correctIndex != null ? String.fromCharCode(65 + correctIndex) : '—';
+              const userLetter =
+                userIndex != null ? String.fromCharCode(65 + userIndex) : userAnswer.toUpperCase();
+
+              const isCorrect =
+                correctIndex != null && userIndex != null && correctIndex === userIndex;
+
+              const result =
+                correctIndex == null
+                  ? '⚠️ Could not determine the correct answer from the question data.'
+                  : isCorrect
+                  ? '✅ Correct!'
+                  : '❌ Incorrect.';
+
+              const correctText =
+                correctIndex != null && options[correctIndex]
+                  ? ` (${options[correctIndex]})`
+                  : '';
+
+              await submitted.reply({
+                ephemeral: true,
+                content: [
+                  `**${result}**`,
+                  `**Your answer:** ${userLetter}`,
+                  `**Correct answer:** ${correctLetter}${correctText}`,
+                ].join('\n'),
+              });
+            } else {
+              // FRQ grading via AI — per your schema
+              const correctAnswersArr = Array.isArray(q.answers)
+                ? q.answers.map((a) => String(a))
+                : q.answers != null
+                ? [String(q.answers)]
+                : [];
 
               try {
-                const userAnswerRaw = i.fields.getTextInputValue('answerInput') || '';
-                const userAnswer = userAnswerRaw.trim();
+                const gradeRes = await api.post('/api/gemini/grade-free-responses', {
+                  responses: [
+                    {
+                      question: q.question || '',
+                      correctAnswers: correctAnswersArr,
+                      studentAnswer: userAnswer,
+                    },
+                  ],
+                });
 
-                if (isMcq) {
-                  const correct = resolveCorrectMcq(question);
-                  if (!correct) {
-                    await i.reply({ content: 'Sorry, I could not determine the correct answer for this question.', ephemeral: true });
-                    return;
-                  }
-                  const userLetter = userAnswer.slice(0, 1).toUpperCase();
-                  const isCorrect = userLetter === correct.letter;
+                const grades = gradeRes?.data?.data?.grades || [];
+                const first = grades[0] || {};
+                const score = typeof first.score === 'number' ? first.score : null;
+                const isCorrect =
+                  score == null ? null : Number(score) >= Number(FRQ_CORRECT_THRESHOLD);
 
-                  await i.reply({
-                    content: `${isCorrect ? '✅ Correct!' : '❌ Incorrect.'}\n**Your answer:** ${userLetter}\n**Correct answer:** ${correct.letter}) ${correct.text}`,
-                    ephemeral: true
-                  });
-                } else {
-                  // FRQ grading via API (no retry/backoff)
-                  try {
-                    const body = {
-                      freeResponses: [{
-                        "question": question,
-                        "correctAnswers": Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
-                        "studentAnswer": userAnswer
-                      }]
-                    };
+                const verdict =
+                  isCorrect == null
+                    ? '⚠️ Could not determine correctness from the grader.'
+                    : isCorrect
+                    ? '✅ Correct!'
+                    : '❌ Not quite.';
 
-                    const gradeRes = await api.post('/api/gemini/grade-free-responses', body);
+                const feedback = first.feedback ? `\n**Feedback:** ${first.feedback}` : '';
+                const keyPts = Array.isArray(first.keyPoints) && first.keyPoints.length
+                  ? `\n**Key points:** ${first.keyPoints.join('; ')}`
+                  : '';
+                const suggestions = Array.isArray(first.suggestions) && first.suggestions.length
+                  ? `\n**Suggestions:** ${first.suggestions.join('; ')}`
+                  : '';
+                const correctDisplay =
+                  correctAnswersArr.length > 0
+                    ? `\n**Correct answer(s):** ${correctAnswersArr.join(', ')}`
+                    : '';
 
-                    // Try to interpret the result shape
-                    const payload = gradeRes.data?.data;
-                    const result = Array.isArray(payload) ? payload[0] : (payload?.result || payload);
-                    const isCorrect =
-                      (typeof result?.isCorrect === 'boolean' && result.isCorrect) ||
-                      (typeof result?.correct === 'boolean' && result.correct) ||
-                      (typeof result?.score === 'number' ? result.score >= 0.5 : false);
-
-                    const correctAnswers = Array.isArray(question.answers) ? question.answers
-                      : (question.answers ? [question.answers] : []);
-                    const correctLine = correctAnswers.length ? correctAnswers.join(' | ') : 'N/A';
-
-                    await i.reply({
-                      content: `${isCorrect ? '✅ Likely correct!' : '❌ Likely incorrect.'}\n**Your answer:** ${userAnswer}\n**Expected answer(s):** ${correctLine}`,
-                      ephemeral: true
-                    });
-                  } catch (err) {
-                    const status = err?.response?.status;
-                    const msg =
-                      status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
-                      : status === 503 ? 'AI service temporarily unavailable. Please try again later.'
-                      : 'Grading failed. Please try again later.';
-                    await i.reply({ content: msg, ephemeral: true });
-                  }
-                }
-              } finally {
-                client.off('interactionCreate', onModal);
+                await submitted.reply({
+                  ephemeral: true,
+                  content:
+                    `**FRQ Grade:** ${verdict}${score != null ? ` (score: ${score})` : ''}\n` +
+                    `**Your answer:** ${userAnswer}` +
+                    correctDisplay +
+                    feedback +
+                    keyPts +
+                    suggestions,
+                });
+              } catch (e) {
+                console.error('FRQ grade error:', e?.response?.data || e);
+                const msg =
+                  e?.response?.status === 429
+                    ? 'Rate limit exceeded. Please try again in a few moments.'
+                    : 'Grading failed. Please try again later.';
+                await submitted.reply({ ephemeral: true, content: msg });
               }
-            };
-
-            btnInt.client.on('interactionCreate', onModal);
-            setTimeout(() => btnInt.client.off('interactionCreate', onModal), 5 * 60 * 1000);
-            return;
-          }
-
-          if (btnInt.customId === EXPLAIN_ID) {
-            await btnInt.deferReply({ ephemeral: true });
-            try {
-              // Only send the question object per your requirement
-              const explainRes = await api.post('/api/gemini/explain', { question });
-
-              // Pull a reasonable explanation field
-              const d = explainRes.data?.data;
-              const expl = d?.explanation || d?.text || d?.message || (typeof d === 'string' ? d : null);
-
-              await btnInt.editReply({
-                content: expl || 'No explanation available for this question right now.'
-              });
-            } catch (err) {
-              const status = err?.response?.status;
-              const msg =
-                status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
-                : status === 503 ? 'AI service temporarily unavailable. Please try again later.'
-                : 'Failed to generate an explanation. Please try again later.';
-              await btnInt.editReply({ content: msg });
             }
-            return;
           }
-
         } catch (err) {
+          console.error('Button/Modal flow error:', err);
           try {
-            if (!btnInt.deferred && !btnInt.replied) {
-              await btnInt.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
+            if (btnInteraction.deferred || btnInteraction.replied) {
+              await btnInteraction.followUp({
+                ephemeral: true,
+                content: 'Something went wrong handling that action.',
+              });
+            } else {
+              await btnInteraction.reply({
+                ephemeral: true,
+                content: 'Something went wrong handling that action.',
+              });
             }
           } catch {}
-          console.error('Button/modal handling error:', err);
         }
       });
 
       collector.on('end', () => {
-        // Buttons stay visible; they just won’t respond after 24h.
+        // Keep buttons visually enabled; session state is still TTL-guarded above.
+        // Cleanup if you want:
+        // questionState.delete(msg.id);
       });
-
     } catch (err) {
       console.error('Error in Anatomy Endocrine command:', err?.response?.data || err);
-      const status = err?.response?.status;
-      const msg =
-        status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
-        : status === 503 ? 'Service temporarily unavailable. Please try again later.'
-        : 'Command failed. Please try again later.';
-
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: msg, embeds: [], components: [] });
-        } else {
-          await interaction.reply({ content: msg, ephemeral: true });
-        }
-      } catch {}
+      const content =
+        err?.response?.status === 429
+          ? 'Rate limit exceeded. Please try again in a few moments.'
+          : 'Command failed. Please try again later.';
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({ content }).catch(() => {});
+      } else {
+        await interaction.reply({ content, ephemeral: true }).catch(() => {});
+      }
     }
-  }
+  },
 };
