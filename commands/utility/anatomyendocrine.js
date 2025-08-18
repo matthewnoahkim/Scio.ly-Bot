@@ -17,9 +17,9 @@ const crypto = require('crypto');
 // Config / Constants
 // =========================
 const BASE_URL = 'https://scio.ly';
-const API_KEY = 'xo9IKNJG65e0LMBa55Tq';
+const API_KEY = 'xo9IKNJG65e0LMBa55Tq'; // consider moving to an env var
 
-// Create a pre-configured axios instance with auth headers
+// Pre-configured axios instance with auth headers
 const api = axios.create({
   baseURL: BASE_URL,
   headers: {
@@ -31,8 +31,6 @@ const api = axios.create({
   timeout: 20_000,
 });
 
-// =========================
-// Options UI
 // =========================
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
@@ -53,13 +51,11 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// =========================
 // Helpers
-// =========================
 const letterFromIndex = (i) => String.fromCharCode(65 + i);
 const normalize = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-/** Get MCQ answer in {index, letter, text} form, if possible */
+/** Resolve MCQ correct answer to {index, letter, text} if possible */
 function resolveCorrectMcq(question) {
   if (!question || !Array.isArray(question.options) || question.options.length === 0) return null;
   const opts = question.options;
@@ -73,7 +69,7 @@ function resolveCorrectMcq(question) {
     if (idx >= 0) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
   }
 
-  // letter
+  // letter A/B/C...
   if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
     const idx = a.toUpperCase().charCodeAt(0) - 65;
     if (idx >= 0 && idx < opts.length) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
@@ -100,9 +96,6 @@ function resolveCorrectMcq(question) {
   return null;
 }
 
-// =========================
-// Command
-// =========================
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomyendocrine')
@@ -133,7 +126,7 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    // Ack ASAP to avoid 10062 timing issues
+    // Reply immediately to avoid "Unknown interaction"
     let placeholderMsg;
     try {
       placeholderMsg = await interaction.reply({ content: 'Fetching question…', fetchReply: true });
@@ -209,7 +202,7 @@ module.exports = {
       embed.addFields(fields);
       embed.setFooter({ text: 'Use the buttons below.' });
 
-      // Unique IDs to scope the buttons & modal to this message
+      // Unique IDs for this message run
       const nonce = crypto.randomBytes(4).toString('hex');
       const CHECK_ID = `ae_check_${nonce}`;
       const EXPLAIN_ID = `ae_explain_${nonce}`;
@@ -226,24 +219,22 @@ module.exports = {
           .setStyle(ButtonStyle.Primary)
       );
 
-      // Show the embed (edit the placeholder)
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply({ content: '', embeds: [embed], components: [row] });
       } else {
         await interaction.reply({ embeds: [embed], components: [row] });
       }
 
-      // Get the actual message and start a collector
       const message = placeholderMsg ?? await interaction.fetchReply();
       const collector = message.createMessageComponentCollector({
         componentType: ComponentType.Button,
-        time: 24 * 60 * 60 * 1000, // 24h window; buttons can be pressed any number of times
+        time: 24 * 60 * 60 * 1000, // 24h
       });
 
       collector.on('collect', async (btnInt) => {
         try {
           if (btnInt.customId === CHECK_ID) {
-            // Show modal for the user to enter answer
+            // Modal for user answer
             const modal = new ModalBuilder()
               .setCustomId(MODAL_ID)
               .setTitle('Check Your Answer');
@@ -255,11 +246,10 @@ module.exports = {
               .setStyle(isMcq ? TextInputStyle.Short : TextInputStyle.Paragraph)
               .setRequired(true);
 
-            const modalRow = new ActionRowBuilder().addComponents(input);
-            modal.addComponents(modalRow);
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
             await btnInt.showModal(modal);
 
-            // One-shot modal listener bound to this user & customId
+            // One-shot modal listener for the same user
             const client = btnInt.client;
             const userId = btnInt.user.id;
 
@@ -286,7 +276,7 @@ module.exports = {
                     ephemeral: true
                   });
                 } else {
-                  // FRQ grading via API with retry/backoff
+                  // FRQ grading via API (no retry/backoff)
                   try {
                     const body = {
                       freeResponses: [{
@@ -295,9 +285,9 @@ module.exports = {
                         studentAnswer: userAnswer
                       }]
                     };
-                    const gradeRes = await postWithRetry('/api/gemini/grade-free-responses', body);
+                    const gradeRes = await api.post('/api/gemini/grade-free-responses', body);
 
-                    // NOTE: adjust if your API returns a different structure
+                    // Try to interpret the result shape
                     const payload = gradeRes.data?.data;
                     const result = Array.isArray(payload) ? payload[0] : (payload?.result || payload);
                     const isCorrect =
@@ -323,25 +313,22 @@ module.exports = {
                   }
                 }
               } finally {
-                // Clean up this one-shot listener
                 client.off('interactionCreate', onModal);
               }
             };
 
-            // Arm the listener with a timeout
             btnInt.client.on('interactionCreate', onModal);
             setTimeout(() => btnInt.client.off('interactionCreate', onModal), 5 * 60 * 1000);
-
             return;
           }
 
           if (btnInt.customId === EXPLAIN_ID) {
             await btnInt.deferReply({ ephemeral: true });
             try {
-              // Per your request: send only { question } to explain
-              const explainRes = await postWithRetry('/api/gemini/explain', { question });
+              // Only send the question object per your requirement
+              const explainRes = await api.post('/api/gemini/explain', { question });
 
-              // Try common shapes; tweak if your API returns a different field
+              // Pull a reasonable explanation field
               const d = explainRes.data?.data;
               const expl = d?.explanation || d?.text || d?.message || (typeof d === 'string' ? d : null);
 
@@ -370,7 +357,7 @@ module.exports = {
       });
 
       collector.on('end', () => {
-        // Buttons remain visible; they just won’t respond after 24h.
+        // Buttons stay visible; they just won’t respond after 24h.
       });
 
     } catch (err) {
