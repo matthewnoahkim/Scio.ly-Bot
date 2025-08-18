@@ -280,11 +280,12 @@ module.exports = {
                   try {
                     const body = {
                       freeResponses: [{
-                        question,
-                        correctAnswers: Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
-                        studentAnswer: userAnswer
+                        "question": question,
+                        "correctAnswers": Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
+                        "studentAnswer": userAnswer
                       }]
                     };
+
                     const gradeRes = await api.get('/api/gemini/grade-free-responses', { params: body });
 
                     // Try to interpret the result shape
