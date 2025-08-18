@@ -6,7 +6,7 @@ const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
   "Very Easy (0-19%)",
-  "Easy (20-39%)",
+  "Easy (20-39%)", 
   "Medium (40-59%)",
   "Hard (60-79%)",
   "Very Hard (80-100%)"
@@ -15,23 +15,11 @@ const subtopicOptions = ["Brain", "Spinal Cord", "Nerves", "Reflexes", "Neurotra
 
 const difficultyMap = {
   "Very Easy (0-19%)": { min: 0.0, max: 0.19 },
-  "Easy (20-39%)":     { min: 0.2, max: 0.39 },
-  "Medium (40-59%)":   { min: 0.4, max: 0.59 },
-  "Hard (60-79%)":     { min: 0.6, max: 0.79 },
+  "Easy (20-39%)": { min: 0.2, max: 0.39 },
+  "Medium (40-59%)": { min: 0.4, max: 0.59 },
+  "Hard (60-79%)": { min: 0.6, max: 0.79 },
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
-
-function pickFirstQuestion(data) {
-  if (!data) return null;
-  if (Array.isArray(data)) return data[0] || null;
-  if (Array.isArray(data.questions)) return data.questions[0] || null;
-  if (data.id || data.base52 || data.question) return data;
-  return null;
-}
-
-function prune(obj) {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null));
-}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -62,8 +50,8 @@ module.exports = {
     try {
       await interaction.deferReply();
 
-      const questionType = interaction.options.getString('question_type'); 
-      const division = interaction.options.getString('division');         
+      const questionType = interaction.options.getString('question_type');
+      const division = interaction.options.getString('division');
       const difficultyLabel = interaction.options.getString('difficulty');
       const subtopic = interaction.options.getString('subtopic');
 
@@ -73,7 +61,7 @@ module.exports = {
         difficulty_max = difficultyMap[difficultyLabel].max;
       }
 
-      const baseParams = prune({
+      const query = {
         event: 'Anatomy - Nervous',
         division,
         difficulty_min,
@@ -81,50 +69,56 @@ module.exports = {
         subtopic,
         question_type: questionType,
         limit: 1
-      });
+      };
 
-      const listRes = await axios.get('https://scio.ly/api/questions', { params: baseParams, timeout: 15000 });
-      if (!listRes.data?.success) {
-        await interaction.editReply({ content: 'API error. Please try again later.' });
+      const res = await axios.get('http://scioly-api.vercel.app/api/questions', { params: query });
+      
+      if (!res.data.success || !res.data.data || res.data.data.length === 0) {
+        await interaction.editReply({
+          content: 'No questions found matching your criteria. Try different filters.',
+          ephemeral: true
+        });
         return;
       }
 
-      const first = pickFirstQuestion(listRes.data.data);
-      if (!first) {
-        await interaction.editReply({ content: 'No questions found matching your criteria. Try different filters.' });
-        return;
-      }
-
-      let question = first;
-      if (!first.base52 && first.id) {
-        try {
-          const detailRes = await axios.get(`https://scio.ly/api/questions/${first.id}`, { timeout: 15000 });
-          if (detailRes.data?.success && detailRes.data.data) {
-            question = detailRes.data.data;
-          }
-        } catch {
-        }
-      }
+      const question = res.data.data[0];
 
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
         .setTitle('Anatomy - Nervous')
-        .setDescription(question.question ?? '—');
+        .setDescription(question.question);
 
       const fields = [];
 
-      if (Array.isArray(question.options) && question.options.length > 0) {
+      // Add answer choices if it's an MCQ
+      if (question.options && question.options.length > 0) {
         const answerChoices = question.options
           .map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`)
           .join('\n');
-        fields.push({ name: '**Answer Choices:**', value: answerChoices, inline: false });
+        
+        fields.push({
+          name: '**Answer Choices:**',
+          value: answerChoices,
+          inline: false
+        });
       }
 
       fields.push(
-        { name: '**Division:**', value: String(question.division ?? '—'), inline: true },
-        { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
-        { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
-        { name: '**Question ID:**', value: String(question.base52 ?? question.id ?? '—'), inline: false }
+        {
+          name: '**Difficulty:**',
+          value: `${Math.round(question.difficulty * 100)}%`,
+          inline: true
+        },
+        {
+          name: '**Subtopic(s):**',
+          value: question.subtopics?.join(', ') || 'None',
+          inline: true
+        },
+        {
+          name: '**Question ID:**',
+          value: question.id.toString(),
+          inline: false
+        }
       );
 
       embed.addFields(...fields);
@@ -134,11 +128,17 @@ module.exports = {
 
     } catch (err) {
       console.error('Error in Anatomy Nervous command:', err);
-
-      if (err.response?.status === 429) {
-        await interaction.editReply({ content: 'Rate limit exceeded. Please try again in a few moments.' });
+      
+      if (err.response && err.response.status === 429) {
+        await interaction.editReply({
+          content: 'Rate limit exceeded. Please try again in a few moments.',
+          ephemeral: true
+        });
       } else {
-        await interaction.editReply({ content: 'Command failed. Please try again later.' });
+        await interaction.editReply({
+          content: 'Command failed. Please try again later.',
+          ephemeral: true
+        });
       }
     }
   }
