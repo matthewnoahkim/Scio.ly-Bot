@@ -361,7 +361,7 @@ module.exports = {
 
               try {
                 const gradeRes = await api.post('/api/gemini/grade-free-responses', {
-                  responses: [
+                  "responses": [
                     {
                       "question": q.question || '',
                       "correctAnswers": correctAnswersArr,
