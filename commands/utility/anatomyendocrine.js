@@ -24,6 +24,9 @@ const difficultyMap = {
 const API_KEY = 'xo9IKNJG65e0LMBa55Tq';
 const API_BASE_URL = 'https://scio.ly';
 
+// Store question data temporarily for button interactions
+const questionCache = new Map();
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomyendocrine')
@@ -85,6 +88,16 @@ module.exports = {
       }
 
       const question = res.data.data[0];
+      
+      // Cache the question data for button interactions
+      questionCache.set(question.id, question);
+      
+      // Clean up old cached questions (keep only last 100)
+      if (questionCache.size > 100) {
+        const entries = Array.from(questionCache.entries());
+        const toDelete = entries.slice(0, entries.length - 100);
+        toDelete.forEach(([id]) => questionCache.delete(id));
+      }
 
       const embed = new EmbedBuilder()
         .setColor(0x0099FF)
@@ -128,22 +141,25 @@ module.exports = {
 
       // Create buttons
       const checkAnswerButton = new ButtonBuilder()
-        .setCustomId(`check_answer_${question.id}`)
+        .setCustomId(`anatomyendocrine_check_${question.id}`)
         .setLabel('Check Answer')
         .setStyle(ButtonStyle.Primary);
 
       const explainButton = new ButtonBuilder()
-        .setCustomId(`explain_question_${question.id}`)
+        .setCustomId(`anatomyendocrine_explain_${question.id}`)
         .setLabel('Explain Question')
         .setStyle(ButtonStyle.Secondary);
 
       const row = new ActionRowBuilder()
         .addComponents(checkAnswerButton, explainButton);
 
-      await interaction.editReply({ 
+      const response = await interaction.editReply({ 
         embeds: [embed], 
         components: [row] 
       });
+
+      // Set up collectors for button interactions
+      this.setupCollectors(response, question);
 
     } catch (err) {
       console.error('Error in Anatomy Endocrine command:', err);
@@ -162,40 +178,42 @@ module.exports = {
     }
   },
 
-  // Handle button interactions
-  async handleButtonInteraction(interaction) {
-    const customId = interaction.customId;
-    
-    if (customId.startsWith('check_answer_')) {
-      await this.handleCheckAnswer(interaction);
-    } else if (customId.startsWith('explain_question_')) {
-      await this.handleExplainQuestion(interaction);
-    }
+  setupCollectors(message, question) {
+    // Button collector
+    const buttonCollector = message.createMessageComponentCollector({
+      filter: i => i.customId.startsWith('anatomyendocrine_'),
+      time: 300000 // 5 minutes
+    });
+
+    buttonCollector.on('collect', async (buttonInteraction) => {
+      try {
+        if (buttonInteraction.customId.startsWith('anatomyendocrine_check_')) {
+          await this.handleCheckAnswer(buttonInteraction, question);
+        } else if (buttonInteraction.customId.startsWith('anatomyendocrine_explain_')) {
+          await this.handleExplainQuestion(buttonInteraction, question);
+        }
+      } catch (error) {
+        console.error('Error handling button interaction:', error);
+        if (!buttonInteraction.replied && !buttonInteraction.deferred) {
+          await buttonInteraction.reply({
+            content: 'An error occurred while processing your request.',
+            ephemeral: true
+          });
+        }
+      }
+    });
+
+    buttonCollector.on('end', () => {
+      // Clean up the question from cache when collector expires
+      questionCache.delete(question.id);
+    });
   },
 
-  async handleCheckAnswer(interaction) {
-    try {
-      const questionId = interaction.customId.replace('check_answer_', '');
-      
-      // First, get the question data from the API
-      const questionRes = await axios.post(`${API_BASE_URL}/api/questions/batch`, 
-        { ids: [questionId] },
-        { headers: { 'X-API-Key': API_KEY } }
-      );
-
-      if (!questionRes.data.success || !questionRes.data.data || questionRes.data.data.length === 0) {
-        await interaction.reply({
-          content: 'Could not retrieve question data. Please try again.',
-          ephemeral: true
-        });
-        return;
-      }
-
-      const question = questionRes.data.data[0];
-      
+  async handleCheckAnswer(interaction, question) {
+    try {      
       // Create modal for answer input
       const modal = new ModalBuilder()
-        .setCustomId(`answer_modal_${questionId}`)
+        .setCustomId(`anatomyendocrine_modal_${question.id}`)
         .setTitle('Submit Your Answer');
 
       const answerInput = new TextInputBuilder()
@@ -209,35 +227,35 @@ module.exports = {
       modal.addComponents(firstActionRow);
 
       await interaction.showModal(modal);
+
+      // Set up modal collector
+      const modalCollector = interaction.awaitModalSubmit({
+        filter: i => i.customId === `anatomyendocrine_modal_${question.id}`,
+        time: 120000 // 2 minutes
+      });
+
+      modalCollector.then(async (modalInteraction) => {
+        await this.handleModalSubmit(modalInteraction, question);
+      }).catch(error => {
+        if (error.code !== 'INTERACTION_COLLECTOR_ERROR') {
+          console.error('Modal collector error:', error);
+        }
+      });
+
     } catch (err) {
       console.error('Error handling check answer:', err);
-      await interaction.reply({
-        content: 'An error occurred while processing your request.',
-        ephemeral: true
-      });
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: 'An error occurred while processing your request.',
+          ephemeral: true
+        });
+      }
     }
   },
 
-  async handleExplainQuestion(interaction) {
+  async handleExplainQuestion(interaction, question) {
     try {
       await interaction.deferReply({ ephemeral: true });
-      
-      const questionId = interaction.customId.replace('explain_question_', '');
-      
-      // Get the question data
-      const questionRes = await axios.post(`${API_BASE_URL}/api/questions/batch`, 
-        { ids: [questionId] },
-        { headers: { 'X-API-Key': API_KEY } }
-      );
-
-      if (!questionRes.data.success || !questionRes.data.data || questionRes.data.data.length === 0) {
-        await interaction.editReply({
-          content: 'Could not retrieve question data. Please try again.'
-        });
-        return;
-      }
-
-      const question = questionRes.data.data[0];
       
       // Call the AI explain endpoint
       const explainRes = await axios.post(`${API_BASE_URL}/api/gemini/explain`, 
@@ -263,36 +281,24 @@ module.exports = {
 
     } catch (err) {
       console.error('Error handling explain question:', err);
-      await interaction.editReply({
-        content: 'An error occurred while generating the explanation.'
-      });
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.editReply({
+          content: 'An error occurred while generating the explanation.'
+        });
+      } else {
+        await interaction.editReply({
+          content: 'An error occurred while generating the explanation.'
+        });
+      }
     }
   },
 
-  // Handle modal submissions
-  async handleModalSubmit(interaction) {
-    if (!interaction.customId.startsWith('answer_modal_')) return;
-
+  async handleModalSubmit(interaction, question) {
     try {
       await interaction.deferReply({ ephemeral: true });
       
-      const questionId = interaction.customId.replace('answer_modal_', '');
       const userAnswer = interaction.fields.getTextInputValue('user_answer');
       
-      // Get the question data
-      const questionRes = await axios.post(`${API_BASE_URL}/api/questions/batch`, 
-        { ids: [questionId] },
-        { headers: { 'X-API-Key': API_KEY } }
-      );
-
-      if (!questionRes.data.success || !questionRes.data.data || questionRes.data.data.length === 0) {
-        await interaction.editReply({
-          content: 'Could not retrieve question data. Please try again.'
-        });
-        return;
-      }
-
-      const question = questionRes.data.data[0];
       let isCorrect = false;
       let correctAnswer = '';
 
@@ -305,25 +311,31 @@ module.exports = {
         isCorrect = userLetter === correctLetter;
       } else {
         // FRQ - use AI grading
-        const gradeRes = await axios.post(`${API_BASE_URL}/api/gemini/grade-free-responses`, 
-          {
-            responses: [{
-              question: question.question,
-              correctAnswers: question.answers,
-              studentAnswer: userAnswer
-            }]
-          },
-          { headers: { 'X-API-Key': API_KEY } }
-        );
+        try {
+          const gradeRes = await axios.post(`${API_BASE_URL}/api/gemini/grade-free-responses`, 
+            {
+              responses: [{
+                question: question.question,
+                correctAnswers: question.answers,
+                studentAnswer: userAnswer
+              }]
+            },
+            { headers: { 'X-API-Key': API_KEY } }
+          );
 
-        if (gradeRes.data.success && gradeRes.data.data.grades.length > 0) {
-          const grade = gradeRes.data.data.grades[0];
-          isCorrect = grade.score >= 0.7; // Consider 70%+ as correct
-          correctAnswer = question.answers.join(', ');
-        } else {
-          correctAnswer = question.answers.join(', ');
-          isCorrect = false;
+          if (gradeRes.data.success && gradeRes.data.data.grades.length > 0) {
+            const grade = gradeRes.data.data.grades[0];
+            isCorrect = grade.score >= 0.7; // Consider 70%+ as correct
+          }
+        } catch (gradeError) {
+          console.error('Error grading FRQ:', gradeError);
+          // Fallback to simple string comparison if AI grading fails
+          const userAnswerLower = userAnswer.toLowerCase().trim();
+          isCorrect = question.answers.some(answer => 
+            userAnswerLower.includes(answer.toString().toLowerCase().trim())
+          );
         }
+        correctAnswer = question.answers.join(', ');
       }
 
       const resultEmbed = new EmbedBuilder()
@@ -338,9 +350,15 @@ module.exports = {
 
     } catch (err) {
       console.error('Error handling modal submit:', err);
-      await interaction.editReply({
-        content: 'An error occurred while checking your answer.'
-      });
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.editReply({
+          content: 'An error occurred while checking your answer.'
+        });
+      } else {
+        await interaction.editReply({
+          content: 'An error occurred while checking your answer.'
+        });
+      }
     }
   }
 };
