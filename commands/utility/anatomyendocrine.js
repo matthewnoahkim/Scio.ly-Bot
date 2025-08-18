@@ -17,7 +17,7 @@ const crypto = require('crypto');
 // Config / Constants
 // =========================
 const BASE_URL = 'https://scio.ly';
-const API_KEY = 'xo9IKNJG65e0LMBa55Tq'; // consider moving to env var for security
+const API_KEY = 'xo9IKNJG65e0LMBa55Tq';
 
 // Create a pre-configured axios instance with auth headers
 const api = axios.create({
@@ -30,24 +30,6 @@ const api = axios.create({
   },
   timeout: 20_000,
 });
-
-// Gentle exponential backoff for rate-limited AI endpoints
-async function postWithRetry(path, body, { tries = 3, baseDelayMs = 800 } = {}) {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await api.post(path, body);
-    } catch (err) {
-      const status = err?.response?.status;
-      const retriable = status === 429 || status === 503;
-      attempt++;
-      if (!retriable || attempt >= tries) throw err;
-      const jitter = Math.floor(Math.random() * 250);
-      const delay = baseDelayMs * Math.pow(2, attempt - 1) + jitter;
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
 
 // =========================
 // Options UI
