@@ -12,20 +12,6 @@ module.exports = {
 			return;
 		}
 
-		if (interaction.isButton()) {
-    		const command = interaction.client.commands.get('anatomyendocrine');
-    		if (command && (interaction.customId.includes('check_answer_') || interaction.customId.includes('explain_question_'))) {
-        		await command.handleButtonInteraction(interaction);
-    		}
-		}
-
-		if (interaction.isModalSubmit()) {
-    		const command = interaction.client.commands.get('anatomyendocrine');
-    		if (command && interaction.customId.startsWith('answer_modal_')) {
-       			await command.handleModalSubmit(interaction);
-    		}
-		}
-
 		try {
 			await command.execute(interaction);
 		} catch (error) {
