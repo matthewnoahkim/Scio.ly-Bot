@@ -1,6 +1,15 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 
+// Axios client configured for scio.ly with API key header
+const api = axios.create({
+  baseURL: 'https://scio.ly',
+  headers: {
+    'X-API-Key': process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq',
+    'Content-Type': 'application/json'
+  },
+});
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('check')
@@ -22,8 +31,8 @@ module.exports = {
             const questionId = interaction.options.getString('question_id');
             const userAnswer = interaction.options.getString('answer');
 
-            const questionResponse = await axios.get(
-                `https://scio.ly/api/questions/${questionId}`
+            const questionResponse = await api.get(
+                `/api/questions/${questionId}`
             );
 
             if (!questionResponse.data.success) {
@@ -55,8 +64,8 @@ module.exports = {
 
             } else {
                 try {
-                    const gradeResponse = await axios.post(
-                        'https://scio.ly/api/gemini/grade-free-responses',
+                    const gradeResponse = await api.post(
+                        '/api/gemini/grade-free-responses',
                         {
                             freeResponses: [{
                                 question: question,
