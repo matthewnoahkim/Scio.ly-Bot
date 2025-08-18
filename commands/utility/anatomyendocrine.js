@@ -9,12 +9,49 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ComponentType,
-  MessageFlags,
 } = require('discord.js');
 const axios = require('axios');
 const crypto = require('crypto');
 
-// ---- Options UI ----
+// =========================
+// Config / Constants
+// =========================
+const BASE_URL = 'https://scio.ly';
+const API_KEY = 'xo9IKNJG65e0LMBa55Tq'; // consider moving to env var for security
+
+// Create a pre-configured axios instance with auth headers
+const api = axios.create({
+  baseURL: BASE_URL,
+  headers: {
+    'X-API-Key': API_KEY,
+    'Authorization': `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  },
+  timeout: 20_000,
+});
+
+// Gentle exponential backoff for rate-limited AI endpoints
+async function postWithRetry(path, body, { tries = 3, baseDelayMs = 800 } = {}) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await api.post(path, body);
+    } catch (err) {
+      const status = err?.response?.status;
+      const retriable = status === 429 || status === 503;
+      attempt++;
+      if (!retriable || attempt >= tries) throw err;
+      const jitter = Math.floor(Math.random() * 250);
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) + jitter;
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
+// =========================
+// Options UI
+// =========================
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
@@ -34,50 +71,40 @@ const difficultyMap = {
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
 
-// ---- Helpers ----
-const BASE_URL = 'https://scio.ly';
+// =========================
+// Helpers
+// =========================
+const letterFromIndex = (i) => String.fromCharCode(65 + i);
+const normalize = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-function letterFromIndex(i) {
-  return String.fromCharCode(65 + i);
-}
-
-function normalize(str) {
-  return String(str).toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Attempts to compute the correct MCQ option index from the question payload.
- * Supports several possible forms (index, 1-based index, letter, or option text).
- * Returns { index, letter, text } or null if undetermined.
- */
+/** Get MCQ answer in {index, letter, text} form, if possible */
 function resolveCorrectMcq(question) {
   if (!question || !Array.isArray(question.options) || question.options.length === 0) return null;
   const opts = question.options;
   const answers = question.answers;
 
-  // Prefer first answer if multiple are present (typical MCQ)
   let a = Array.isArray(answers) && answers.length ? answers[0] : answers;
 
-  // If number (0-based or 1-based)
-  if (typeof a === 'number' && Number.isInteger(a)) {
+  // numeric index (0- or 1-based)
+  if (Number.isInteger(a)) {
     let idx = (a >= 0 && a < opts.length) ? a : (a >= 1 && a <= opts.length ? a - 1 : -1);
     if (idx >= 0) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
   }
 
-  // If letter like 'A'
-  if (typeof a === 'string' && a.length === 1 && /[A-Za-z]/.test(a)) {
+  // letter
+  if (typeof a === 'string' && /^[A-Za-z]$/.test(a)) {
     const idx = a.toUpperCase().charCodeAt(0) - 65;
     if (idx >= 0 && idx < opts.length) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
   }
 
-  // If text matching an option
+  // exact text match
   if (typeof a === 'string' && a.length > 1) {
     const n = normalize(a);
     const idx = opts.findIndex(o => normalize(o) === n);
     if (idx !== -1) return { index: idx, letter: letterFromIndex(idx), text: opts[idx] };
   }
 
-  // If answers is an array of strings and one matches an option
+  // any matching text in array
   if (Array.isArray(answers)) {
     for (const cand of answers) {
       if (typeof cand === 'string') {
@@ -91,6 +118,9 @@ function resolveCorrectMcq(question) {
   return null;
 }
 
+// =========================
+// Command
+// =========================
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomyendocrine')
@@ -121,9 +151,15 @@ module.exports = {
     ),
 
   async execute(interaction) {
+    // Ack ASAP to avoid 10062 timing issues
+    let placeholderMsg;
     try {
-      await interaction.deferReply(); // public reply
+      placeholderMsg = await interaction.reply({ content: 'Fetching question…', fetchReply: true });
+    } catch {
+      try { await interaction.deferReply(); } catch {}
+    }
 
+    try {
       const questionType = interaction.options.getString('question_type'); // 'mcq' | 'frq' | null
       const division = interaction.options.getString('division'); // 'B' | 'C' | null
       const difficultyLabel = interaction.options.getString('difficulty');
@@ -135,7 +171,7 @@ module.exports = {
         difficulty_max = difficultyMap[difficultyLabel].max;
       }
 
-      const query = {
+      const params = {
         event: 'Anatomy - Endocrine',
         division,
         difficulty_min,
@@ -145,12 +181,15 @@ module.exports = {
         limit: 1
       };
 
-      const res = await axios.get(`${BASE_URL}/api/questions`, { params: query });
+      const res = await api.get('/api/questions', { params });
 
       if (!res.data?.success || !res.data?.data || res.data.data.length === 0) {
-        await interaction.editReply({
-          content: 'No questions found matching your criteria. Try different filters.'
-        });
+        const msg = 'No questions found matching your criteria. Try different filters.';
+        if (interaction.replied || interaction.deferred) {
+          await interaction.editReply({ content: msg, embeds: [], components: [] });
+        } else {
+          await interaction.reply({ content: msg, ephemeral: true });
+        }
         return;
       }
 
@@ -188,11 +227,11 @@ module.exports = {
       embed.addFields(fields);
       embed.setFooter({ text: 'Use the buttons below.' });
 
-      // Buttons (with a per-message nonce so we can distinguish multiple instances)
+      // Unique IDs to scope the buttons & modal to this message
       const nonce = crypto.randomBytes(4).toString('hex');
       const CHECK_ID = `ae_check_${nonce}`;
       const EXPLAIN_ID = `ae_explain_${nonce}`;
-      const modalId = `ae_modal_${nonce}`;
+      const MODAL_ID = `ae_modal_${nonce}`;
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -205,123 +244,122 @@ module.exports = {
           .setStyle(ButtonStyle.Primary)
       );
 
-      const sent = await interaction.editReply({ embeds: [embed], components: [row] });
+      // Show the embed (edit the placeholder)
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({ content: '', embeds: [embed], components: [row] });
+      } else {
+        await interaction.reply({ embeds: [embed], components: [row] });
+      }
 
-      // Collector for this message so we don't need a global InteractionCreate handler for buttons
-      const collector = sent.createMessageComponentCollector({
+      // Get the actual message and start a collector
+      const message = placeholderMsg ?? await interaction.fetchReply();
+      const collector = message.createMessageComponentCollector({
         componentType: ComponentType.Button,
-        time: 24 * 60 * 60 * 1000, // 24h; allows pressing any number of times within this window
+        time: 24 * 60 * 60 * 1000, // 24h window; buttons can be pressed any number of times
       });
 
       collector.on('collect', async (btnInt) => {
         try {
-          // Only proceed for clicks on this message
-          if (btnInt.message.id !== sent.id) return;
-
-          // ---- CHECK ANSWER FLOW ----
           if (btnInt.customId === CHECK_ID) {
-            // Build modal
+            // Show modal for the user to enter answer
             const modal = new ModalBuilder()
-              .setCustomId(modalId)
+              .setCustomId(MODAL_ID)
               .setTitle('Check Your Answer');
 
             const input = new TextInputBuilder()
               .setCustomId('answerInput')
-              .setLabel(isMcq
-                ? 'Enter your answer letter (A, B, C, ...)'
-                : 'Enter your free-response answer')
+              .setLabel(isMcq ? 'Enter your answer letter (A, B, C, ...)' : 'Enter your free-response answer')
               .setPlaceholder(isMcq ? 'e.g., B' : 'Type your answer here')
               .setStyle(isMcq ? TextInputStyle.Short : TextInputStyle.Paragraph)
               .setRequired(true);
 
             const modalRow = new ActionRowBuilder().addComponents(input);
             modal.addComponents(modalRow);
-
             await btnInt.showModal(modal);
 
-            // Wait for the user's modal submit
-            const submitted = await btnInt.awaitModalSubmit({
-              time: 5 * 60 * 1000, // 5 minutes to submit
-              filter: (i) => i.customId === modalId && i.user.id === btnInt.user.id
-            });
+            // One-shot modal listener bound to this user & customId
+            const client = btnInt.client;
+            const userId = btnInt.user.id;
 
-            const userAnswerRaw = submitted.fields.getTextInputValue('answerInput') || '';
-            const userAnswer = userAnswerRaw.trim();
+            const onModal = async (i) => {
+              if (!i.isModalSubmit()) return;
+              if (i.customId !== MODAL_ID) return;
+              if (i.user.id !== userId) return;
 
-            if (isMcq) {
-              // Grade MCQ by letter
-              const correct = resolveCorrectMcq(question);
-              if (!correct) {
-                await submitted.reply({
-                  content: 'Sorry, I could not determine the correct answer for this question.',
-                  flags: MessageFlags.Ephemeral
-                });
-                return;
-              }
-
-              const userLetter = userAnswer.slice(0, 1).toUpperCase();
-              const isCorrect = userLetter === correct.letter;
-
-              await submitted.reply({
-                content: `${isCorrect ? '✅ Correct!' : '❌ Incorrect.'}\n**Your answer:** ${userLetter}\n**Correct answer:** ${correct.letter}) ${correct.text}`,
-                flags: MessageFlags.Ephemeral
-              });
-            } else {
-              // Grade FRQ using API
               try {
-                const body = {
-                  freeResponses: [{
-                    question, // send the whole question object for context
-                    correctAnswers: Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
-                    studentAnswer: userAnswer
-                  }]
-                };
+                const userAnswerRaw = i.fields.getTextInputValue('answerInput') || '';
+                const userAnswer = userAnswerRaw.trim();
 
-                const gradeRes = await axios.post(`${BASE_URL}/api/gemini/grade-free-responses`, body, {
-                  headers: { 'Content-Type': 'application/json' }
-                });
+                if (isMcq) {
+                  const correct = resolveCorrectMcq(question);
+                  if (!correct) {
+                    await i.reply({ content: 'Sorry, I could not determine the correct answer for this question.', ephemeral: true });
+                    return;
+                  }
+                  const userLetter = userAnswer.slice(0, 1).toUpperCase();
+                  const isCorrect = userLetter === correct.letter;
 
-                const payload = gradeRes.data?.data;
-                const result = Array.isArray(payload) ? payload[0] : (payload?.result || payload);
+                  await i.reply({
+                    content: `${isCorrect ? '✅ Correct!' : '❌ Incorrect.'}\n**Your answer:** ${userLetter}\n**Correct answer:** ${correct.letter}) ${correct.text}`,
+                    ephemeral: true
+                  });
+                } else {
+                  // FRQ grading via API with retry/backoff
+                  try {
+                    const body = {
+                      freeResponses: [{
+                        question,
+                        correctAnswers: Array.isArray(question.answers) ? question.answers : (question.answers ? [question.answers] : []),
+                        studentAnswer: userAnswer
+                      }]
+                    };
+                    const gradeRes = await postWithRetry('/api/gemini/grade-free-responses', body);
 
-                const isCorrect =
-                  (typeof result?.isCorrect === 'boolean' && result.isCorrect) ||
-                  (typeof result?.correct === 'boolean' && result.correct) ||
-                  (typeof result?.score === 'number' ? result.score >= 0.5 : false);
+                    // NOTE: adjust if your API returns a different structure
+                    const payload = gradeRes.data?.data;
+                    const result = Array.isArray(payload) ? payload[0] : (payload?.result || payload);
+                    const isCorrect =
+                      (typeof result?.isCorrect === 'boolean' && result.isCorrect) ||
+                      (typeof result?.correct === 'boolean' && result.correct) ||
+                      (typeof result?.score === 'number' ? result.score >= 0.5 : false);
 
-                const correctAnswers = Array.isArray(question.answers) ? question.answers
-                  : (question.answers ? [question.answers] : []);
+                    const correctAnswers = Array.isArray(question.answers) ? question.answers
+                      : (question.answers ? [question.answers] : []);
+                    const correctLine = correctAnswers.length ? correctAnswers.join(' | ') : 'N/A';
 
-                const correctLine = correctAnswers.length
-                  ? correctAnswers.join(' | ')
-                  : 'N/A';
-
-                await submitted.reply({
-                  content: `${isCorrect ? '✅ Likely correct!' : '❌ Likely incorrect.'}\n**Your answer:** ${userAnswer}\n**Expected answer(s):** ${correctLine}`,
-                  flags: MessageFlags.Ephemeral
-                });
-              } catch (err) {
-                console.error('FRQ grading error:', err?.response?.data || err);
-                const msg = err?.response?.status === 429
-                  ? 'Rate limit exceeded. Please try again in a few moments.'
-                  : 'Grading failed. Please try again later.';
-                await submitted.reply({ content: msg, flags: MessageFlags.Ephemeral });
+                    await i.reply({
+                      content: `${isCorrect ? '✅ Likely correct!' : '❌ Likely incorrect.'}\n**Your answer:** ${userAnswer}\n**Expected answer(s):** ${correctLine}`,
+                      ephemeral: true
+                    });
+                  } catch (err) {
+                    const status = err?.response?.status;
+                    const msg =
+                      status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
+                      : status === 503 ? 'AI service temporarily unavailable. Please try again later.'
+                      : 'Grading failed. Please try again later.';
+                    await i.reply({ content: msg, ephemeral: true });
+                  }
+                }
+              } finally {
+                // Clean up this one-shot listener
+                client.off('interactionCreate', onModal);
               }
-            }
+            };
+
+            // Arm the listener with a timeout
+            btnInt.client.on('interactionCreate', onModal);
+            setTimeout(() => btnInt.client.off('interactionCreate', onModal), 5 * 60 * 1000);
+
             return;
           }
 
-          // ---- EXPLAIN QUESTION FLOW ----
           if (btnInt.customId === EXPLAIN_ID) {
             await btnInt.deferReply({ ephemeral: true });
             try {
-              const explainRes = await axios.post(
-                `${BASE_URL}/api/gemini/explain`,
-                { question, event: 'Anatomy - Endocrine' },
-                { headers: { 'Content-Type': 'application/json' } }
-              );
+              // Per your request: send only { question } to explain
+              const explainRes = await postWithRetry('/api/gemini/explain', { question });
 
-              // Explanation could be in different shapes; try common ones
+              // Try common shapes; tweak if your API returns a different field
               const d = explainRes.data?.data;
               const expl = d?.explanation || d?.text || d?.message || (typeof d === 'string' ? d : null);
 
@@ -329,36 +367,45 @@ module.exports = {
                 content: expl || 'No explanation available for this question right now.'
               });
             } catch (err) {
-              console.error('Explain error:', err?.response?.data || err);
-              const msg = err?.response?.status === 429
-                ? 'Rate limit exceeded. Please try again in a few moments.'
+              const status = err?.response?.status;
+              const msg =
+                status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
+                : status === 503 ? 'AI service temporarily unavailable. Please try again later.'
                 : 'Failed to generate an explanation. Please try again later.';
               await btnInt.editReply({ content: msg });
             }
             return;
           }
+
         } catch (err) {
-          // Defensive catch to avoid unhandled rejections
-          console.error('Button/modal handling error:', err);
           try {
-            if (!btnInt.replied && !btnInt.deferred) {
-              await btnInt.reply({ content: 'Something went wrong handling that action.', flags: MessageFlags.Ephemeral });
+            if (!btnInt.deferred && !btnInt.replied) {
+              await btnInt.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
             }
           } catch {}
+          console.error('Button/modal handling error:', err);
         }
       });
 
       collector.on('end', () => {
-        // No action needed; buttons will remain but won’t respond after collector stops.
+        // Buttons remain visible; they just won’t respond after 24h.
       });
 
     } catch (err) {
       console.error('Error in Anatomy Endocrine command:', err?.response?.data || err);
-      if (err?.response?.status === 429) {
-        await interaction.editReply({ content: 'Rate limit exceeded. Please try again in a few moments.' });
-      } else {
-        await interaction.editReply({ content: 'Command failed. Please try again later.' });
-      }
+      const status = err?.response?.status;
+      const msg =
+        status === 429 ? 'Rate limit exceeded. Please try again in a few moments.'
+        : status === 503 ? 'Service temporarily unavailable. Please try again later.'
+        : 'Command failed. Please try again later.';
+
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: msg, embeds: [], components: [] });
+        } else {
+          await interaction.reply({ content: msg, ephemeral: true });
+        }
+      } catch {}
     }
   }
 };
