@@ -15,7 +15,7 @@ const axios = require('axios');
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
 const FALLBACK_BASE = 'https://scioly-api.vercel.app';
-const API_KEY = process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq'; // put your real key in env
+const API_KEY = process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq'; 
 const AUTH_HEADERS = API_KEY
   ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
   : {};
