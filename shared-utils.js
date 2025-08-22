@@ -64,7 +64,7 @@ function extractExplanation(responseData) {
 async function getExplanationWithRetry(question, eventName, authHeaders, logPrefix = 'shared') {
   let explainRes;
   let retryCount = 0;
-  const maxRetries = 2;
+  const maxRetries = 3;
   
   while (retryCount <= maxRetries) {
     try {
@@ -91,12 +91,18 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
       
       // Check if we got a valid explanation (not an error message)
       const tempExplanation = extractExplanation(explainRes.data);
-      if (tempExplanation && !tempExplanation.includes('I apologize, but you have not provided a question')) {
+      console.log(`[${logPrefix}] Temp explanation preview:`, tempExplanation ? tempExplanation.substring(0, 100) + '...' : 'null');
+      
+      if (tempExplanation && 
+          !tempExplanation.includes('I apologize, but you have not provided a question') &&
+          !tempExplanation.includes('question itself was not provided') &&
+          !tempExplanation.includes('Please provide the') &&
+          tempExplanation.length > 50) { // Ensure it's a substantial response
         console.log(`[${logPrefix}] Valid explanation received, breaking retry loop`);
         break;
       } else if (retryCount < maxRetries) {
-        console.log(`[${logPrefix}] Received error message, will retry...`);
-        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+        console.log(`[${logPrefix}] Received error message or insufficient response, will retry...`);
+        await new Promise(resolve => setTimeout(resolve, 1500 * (retryCount + 1))); // Longer exponential backoff
         retryCount++;
         continue;
       }
@@ -133,8 +139,12 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
   console.log(`[${logPrefix}] Extracted explanation length:`, explanation.length);
   
   // Check if the explanation is actually an error message
-  if (explanation && explanation.includes('I apologize, but you have not provided a question')) {
-    console.log(`[${logPrefix}] API returned error message instead of explanation`);
+  if (explanation && (
+      explanation.includes('I apologize, but you have not provided a question') ||
+      explanation.includes('question itself was not provided') ||
+      explanation.includes('Please provide the') ||
+      explanation.length < 50)) {
+    console.log(`[${logPrefix}] API returned error message or insufficient response instead of explanation`);
     return 'The API returned an error message. This might be due to rate limiting or temporary issues. Please try again in a moment.';
   }
   
