@@ -11,10 +11,10 @@ const {
   ComponentType 
 } = require('discord.js');
 const axios = require('axios');
+const { letterFromIndex, buildFullQuestionText, extractExplanation, getExplanationWithRetry } = require('../../shared-utils');
 
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
-const FALLBACK_BASE = 'https://scioly-api.vercel.app';
 const API_KEY = process.env.SCIO_API_KEY;
 if (!API_KEY) {
   console.warn('[meteorology] No SCIO_API_KEY found in environment variables. API calls may fail.');
@@ -23,8 +23,13 @@ const AUTH_HEADERS = API_KEY
   ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
   : {};
 
+// Colors
+const COLOR_BLUE = '#0000FF';
+const COLOR_GREEN = '#008000';
+const COLOR_RED = '#FF0000';
+
 const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division C"];
+const divisionOptions = ["Division B"];
 const difficultyOptions = [
   "Very Easy (0-19%)",
   "Easy (20-39%)", 
@@ -43,10 +48,6 @@ const difficultyMap = {
 };
 
 // ===== Helpers =====
-function letterFromIndex(idx) {
-  return String.fromCharCode(65 + idx);
-}
-
 function normalize(text) {
   return String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -69,7 +70,7 @@ function resolveCorrectIndex(question) {
 
 function buildQuestionEmbed(question) {
   const embed = new EmbedBuilder()
-    .setColor(0x0099ff)
+    .setColor(COLOR_BLUE)
     .setTitle('Meteorology')
     .setDescription(question.question || 'No question text');
 
@@ -169,41 +170,35 @@ module.exports = {
         limit: 1
       });
 
-      const listRes = await axios.get('https://scio.ly/api/questions', { params: baseParams, timeout: 15000 });
+      const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params: baseParams, timeout: 15000 });
       if (!listRes.data?.success) {
-        await interaction.editReply({ content: 'API error. Please try again later.' });
+        await interaction.editReply('API error. Please try again later.');
         return;
       }
 
       const first = pickFirstQuestion(listRes.data.data);
       if (!first) {
-        await interaction.editReply({ content: 'No questions found matching your criteria. Try different filters.' });
+        await interaction.editReply('No questions found matching your criteria. Try different filters.');
         return;
       }
 
       let question = first;
       if (!first.base52 && first.id) {
         try {
-          const detailRes = await axios.get(`https://scio.ly/api/questions/${first.id}`, { timeout: 15000 });
+          const detailRes = await axios.get(`${PRIMARY_BASE}/api/questions/${first.id}`, { timeout: 15000 });
           if (detailRes.data?.success && detailRes.data.data) {
             question = detailRes.data.data;
           }
         } catch {
+          // ignore detail fetch fail; use first
         }
       }
 
       // Validate question data
       if (!question.question) {
-        await interaction.editReply({ content: 'Question data is incomplete. Please try again.' });
+        await interaction.editReply('Question data is incomplete. Please try again.');
         return;
       }
-      
-      console.log('[meteorology] Question loaded:', {
-        id: question.id,
-        hasOptions: Array.isArray(question.options) && question.options.length > 0,
-        hasAnswers: Array.isArray(question.answers) && question.answers.length > 0,
-        questionType: Array.isArray(question.options) && question.options.length > 0 ? 'MCQ' : 'FRQ'
-      });
       
       const embed = buildQuestionEmbed(question);
       const components = [buildButtonsRow(question.id || interaction.id)];
@@ -218,6 +213,7 @@ module.exports = {
       collector.on('collect', async (btn) => {
         try {
           if (btn.user.id !== interaction.user.id) {
+            // keep ephemeral to avoid channel spam
             await btn.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
             return;
           }
@@ -225,20 +221,14 @@ module.exports = {
           if (btn.customId === `check_${question.id || interaction.id}`) {
             const isMCQ = Array.isArray(question.options) && question.options.length > 0;
             const modalId = `check_modal_${sent.id}`;
-            
-            console.log('[meteorology] Check button clicked:', {
-              isMCQ,
-              hasOptions: Array.isArray(question.options) && question.options.length > 0,
-              optionsCount: question.options?.length || 0
-            });
 
             const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
             const input = new TextInputBuilder()
               .setCustomId('answer_input')
-              .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
+              .setLabel(isMCQ ? 'Your answer' : 'Your answer')
               .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
               .setRequired(true)
-              .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here');
+              .setPlaceholder(isMCQ ? 'e.g., A' : 'Include all necessary details.');
             modal.addComponents(new ActionRowBuilder().addComponents(input));
             await btn.showModal(modal);
 
@@ -258,52 +248,38 @@ module.exports = {
             if (isMCQ) {
               const options = question.options || [];
               if (!options.length) {
-                await submission.reply({ content: 'This question has no options — cannot check as MCQ.', ephemeral: true });
+                await submission.reply('This question has no options — cannot check as MCQ.');
                 return;
               }
               const letter = (userAnswer[0] || '').toUpperCase();
               const idx = letter.charCodeAt(0) - 65;
               if (!(idx >= 0 && idx < options.length)) {
-                await submission.reply({
-                  content: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.`,
-                  ephemeral: true,
-                });
+                await submission.reply(`Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.`);
                 return;
               }
               const correctIdx = resolveCorrectIndex(question);
               const correctLetter = letterFromIndex(correctIdx);
               const correctText = options[correctIdx];
               const userText = options[idx];
-
               const correct = idx === correctIdx;
-              await submission.reply({
-                ephemeral: true,
-                content:
-                  (correct ? '✅ **Correct!**' : '❌ **Incorrect.**') +
-                  `\n**Your answer:** ${letter}) ${userText}\n**Correct answer:** ${correctLetter}) ${correctText}`,
-              });
+
+              const resultEmbed = new EmbedBuilder()
+                .setColor(correct ? COLOR_GREEN : COLOR_RED)
+                .setTitle(correct ? '✅ Correct!' : '❌ Wrong.')
+                .addFields(
+                  { name: 'Your answer', value: `**${letter})** ${userText}`, inline: true },
+                  { name: 'Correct answer', value: `**${correctLetter})** ${correctText}`, inline: true },
+                );
+
+              await submission.reply({ embeds: [resultEmbed] });
             } else {
               // FRQ grading
               try {
-                console.log('[meteorology] Starting FRQ grading for:', {
-                  questionText: question.question?.substring(0, 100) + '...',
-                  userAnswer: userAnswer.substring(0, 100) + '...',
-                  correctAnswers: question.answers
-                });
-                
                 const correctAnswers =
                   Array.isArray(question.answers)
                     ? question.answers.map(a => String(a))
                     : (typeof question.answers === 'string' ? [question.answers] : []);
                 
-                console.log('[meteorology] Prepared grading request:', {
-                  questionLength: question.question?.length,
-                  userAnswerLength: userAnswer.length,
-                  correctAnswersCount: correctAnswers.length,
-                  correctAnswers: correctAnswers
-                });
-                
-                // Use the exact format from the API documentation
                 const requestBody = {
                   responses: [{ 
                     question: question.question, 
@@ -311,37 +287,9 @@ module.exports = {
                     studentAnswer: userAnswer
                   }]
                 };
-                console.log('[meteorology] Request body:', JSON.stringify(requestBody, null, 2));
-                
-                // Try the primary API first
-                let gradeRes;
-                try {
-                  console.log('[meteorology] Trying primary grading API...');
-                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
-                  console.log('[meteorology] Primary grading API success, response structure:', Object.keys(gradeRes.data));
-                } catch (primaryErr) {
-                  console.log('[meteorology] Primary grading API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
-                  
-                  // Try fallback API with same format
-                  try {
-                    console.log('[meteorology] Trying fallback API...');
-                    gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
-                      responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
-                    }, { headers: AUTH_HEADERS });
-                    console.log('[meteorology] Fallback grading API success, response structure:', Object.keys(gradeRes.data));
-                  } catch (fallbackErr) {
-                    console.log('[meteorology] Fallback grading API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
-                    throw fallbackErr; // Re-throw to be caught by outer catch
-                  }
-                }
 
-                console.log('[meteorology] Grading API response received:', {
-                  hasData: !!gradeRes.data?.data,
-                  dataKeys: gradeRes.data?.data ? Object.keys(gradeRes.data.data) : 'none',
-                  fullResponse: JSON.stringify(gradeRes.data, null, 2)
-                });
-                
-                // Handle the grading API response format (currently returns scores, not grades)
+                const gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
+
                 const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
                 let feedback = 'No detailed feedback available from the grading service.';
@@ -349,147 +297,88 @@ module.exports = {
                 let suggestions = [];
                 
                 if (grade) {
-                  // If we get the full grade object with feedback
                   score = grade.score;
                   feedback = grade.feedback || 'No feedback provided.';
-                  keyPoints = grade.keyPoints || [];
-                  suggestions = grade.suggestions || [];
+                  keyPoints = Array.isArray(grade.keyPoints) ? grade.keyPoints : [];
+                  suggestions = Array.isArray(grade.suggestions) ? grade.suggestions : [];
                 } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
-                  // Current API format: just scores
                   score = gradeRes.data.data.scores[0];
-                  feedback = 'Score received but detailed feedback is not currently available from the grading service.';
-                  
-                  // Try to provide some basic feedback based on the score
-                  if (score >= 0.8) {
-                    feedback = 'Excellent answer! You covered the key points well.';
-                  } else if (score >= 0.6) {
-                    feedback = 'Good answer! You covered most of the key points.';
-                  } else if (score >= 0.4) {
-                    feedback = 'Fair answer. You covered some key points but could improve.';
-                  } else {
-                    feedback = 'The answer could be improved. Review the key concepts and try again.';
-                  }
+                  if (score >= 0.8) feedback = 'Excellent answer! You covered the key points well.';
+                  else if (score >= 0.6) feedback = 'Good answer! You covered most of the key points.';
+                  else if (score >= 0.4) feedback = 'Fair answer. You covered some key points but could improve.';
+                  else feedback = 'The answer could be improved. Review the key concepts and try again.';
                 } else {
-                  console.log('[meteorology] No score or grade found in response, showing error to user');
-                  console.log('[meteorology] Available data keys:', Object.keys(gradeRes.data?.data || {}));
-                  await submission.reply({
-                    ephemeral: true,
-                    content: 'Grading service did not return a result. Please try again shortly.',
-                  });
+                  await submission.reply('Grading service did not return a result. Please try again shortly.');
                   return;
                 }
                 
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
-                const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
-                
-                // Build the detailed feedback response
-                let feedbackContent = `🧠 **Grading Result**` +
-                  (scorePct !== null ? ` — **${scorePct}%**` : '') +
-                  `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`;
-                
-                // Add key points if available
+                const isCorrectByThreshold = (scorePct ?? 0) > 40;
+                const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
+                  ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+                  : '—';
+
+                const resultEmbed = new EmbedBuilder()
+                  .setColor(isCorrectByThreshold ? COLOR_GREEN : COLOR_RED)
+                  .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong')
+                  .addFields(
+                    ...(scorePct !== null ? [{ name: 'Score', value: `${scorePct}%`, inline: true }] : []),
+                    { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+                    { name: 'Expected key points / answers', value: correctAnswersDisplay || '—', inline: false },
+                    { name: 'Feedback', value: feedback.slice(0, 1024) || '—', inline: false },
+                  );
+
                 if (keyPoints.length > 0) {
-                  feedbackContent += `\n\n**Key Points Covered:**\n${keyPoints.map(point => `• ${point}`).join('\n')}`;
+                  const kp = keyPoints.map(p => `• ${p}`).join('\n').slice(0, 1024);
+                  if (kp) resultEmbed.addFields({ name: 'Key Points Covered', value: kp, inline: false });
                 }
-                
-                // Add suggestions if available
                 if (suggestions.length > 0) {
-                  feedbackContent += `\n\n**Suggestions for Improvement:**\n${suggestions.map(suggestion => `• ${suggestion}`).join('\n')}`;
+                  const sg = suggestions.map(s => `• ${s}`).join('\n').slice(0, 1024);
+                  if (sg) resultEmbed.addFields({ name: 'Suggestions', value: sg, inline: false });
                 }
                 
-                await submission.reply({
-                  ephemeral: true,
-                  content: feedbackContent,
-                });
+                await submission.reply({ embeds: [resultEmbed] });
               } catch (err) {
-                console.error('[meteorology] FRQ grading error details:', {
-                  status: err?.response?.status,
-                  statusText: err?.response?.statusText,
-                  message: err?.message,
-                  data: err?.response?.data,
-                  fullError: err
-                });
+                console.error('[meteorology] FRQ grading error:', err?.response?.status, err?.message);
                 if (err?.response?.status === 429) {
-                  await submission.reply({ ephemeral: true, content: '⏳ The grading service is rate-limited right now. Please try again in a moment.' });
+                  await submission.reply('The grading service is rate-limited right now. Please try again in a moment.');
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                  await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key.' });
+                  await submission.reply('Authentication failed for grading. Check your API key.');
                 } else if (err?.response?.status) {
-                  await submission.reply({ ephemeral: true, content: `Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+                  await submission.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
                 } else {
-                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+                  await submission.reply(`Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
                 }
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply({ ephemeral: true });
+            await btn.deferReply(); // public
             try {
-              // Try the primary API first
-              let explainRes;
-              try {
-                console.log('[meteorology] Trying primary explanation API...');
-                explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
-                  question: question.question,
-                  event: 'Meteorology',
-                  streaming: false
-                }, { headers: AUTH_HEADERS });
-                console.log('[meteorology] Primary explanation API success');
-              } catch (primaryErr) {
-                console.log('[meteorology] Primary explanation API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
-                // Try fallback API
-                try {
-                  console.log('[meteorology] Trying fallback explanation API...');
-                  explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
-                    question: question.question,
-                    event: 'Meteorology',
-                    streaming: false
-                  }, { headers: AUTH_HEADERS });
-                  console.log('[meteorology] Fallback explanation API success');
-                } catch (fallbackErr) {
-                  console.log('[meteorology] Fallback explanation API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
-                  throw fallbackErr; // Re-throw to be caught by outer catch
-                }
-              }
+              const explanation = await getExplanationWithRetry(question, 'Meteorology', AUTH_HEADERS, 'meteorology');
+              const finalExplanation = explanation || 'No explanation available.';
 
-              // Handle different response formats from the explanation API
-              let explanation = 'No explanation was returned.';
-              if (explainRes.data?.data) {
-                if (typeof explainRes.data.data === 'string') {
-                  explanation = explainRes.data.data;
-                } else if (explainRes.data.data.explanation) {
-                  explanation = explainRes.data.data.explanation;
-                } else if (explainRes.data.data.text) {
-                  explanation = explainRes.data.data.text;
-                } else {
-                  // Log the actual structure for debugging
-                  console.log('[meteorology] Explanation API response structure:', JSON.stringify(explainRes.data.data, null, 2));
-                  explanation = 'Explanation received but format is unexpected.';
-                }
-              }
-              
-              // Truncate explanation to fit Discord's 2000 character limit
-              const maxLength = 1900; // Leave some room for formatting
-              if (explanation.length > maxLength) {
-                explanation = explanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
-              }
-              
-              await btn.editReply({ content: `📘 **Explanation**\n${explanation}` });
-            } catch (err) {
-              console.error('[meteorology] Explanation error details:', {
-                status: err?.response?.status,
-                statusText: err?.response?.statusText,
-                message: err?.message,
-                data: err?.response?.data,
-                fullError: err
-              });
-              
-              if (err?.response?.status === 429) {
-                await btn.editReply({ content: '⏳ The explanation service is rate-limited right now. Please try again in a moment.' });
-              } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key.' });
-              } else if (err?.response?.status) {
-                await btn.editReply({ content: `Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+              const explainEmbed = new EmbedBuilder()
+                .setColor(COLOR_BLUE)
+                .setTitle('Explanation');
+
+              if (finalExplanation.length <= 4096) {
+                explainEmbed.setDescription(finalExplanation);
+                await btn.editReply({ embeds: [explainEmbed] });
               } else {
-                await btn.editReply({ content: `Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+                explainEmbed.setDescription('The full explanation is attached as a file below.');
+                const buffer = Buffer.from(finalExplanation, 'utf-8');
+                await btn.editReply({ embeds: [explainEmbed], files: [{ attachment: buffer, name: 'explanation.txt' }] });
+              }
+            } catch (err) {
+              console.error('[meteorology] Explanation error:', err?.response?.status, err?.message);
+              if (err?.response?.status === 429) {
+                await btn.editReply('The explanation service is rate-limited right now. Please try again in a moment.');
+              } else if (err?.response?.status === 401 || err?.response?.status === 403) {
+                await btn.editReply('Authentication failed for explanation. Check your API key.');
+              } else if (err?.response?.status) {
+                await btn.editReply(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
+              } else {
+                await btn.editReply(`Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
               }
             }
           }
@@ -497,21 +386,20 @@ module.exports = {
           console.error('[meteorology] Button handler error:', innerErr);
           try {
             if (!btn.replied && !btn.deferred) {
-              await btn.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
+              await btn.reply('Something went wrong handling that action.');
             }
           } catch {}
         }
       });
 
-      collector.on('end', () => { /* buttons stop being handled after 30m; visuals remain */ });
+      collector.on('end', () => { /* buttons stop after 30m; visuals remain */ });
 
     } catch (err) {
       console.error('Error in Meteorology command:', err);
-
       if (err.response?.status === 429) {
-        await interaction.editReply({ content: 'Rate limit exceeded. Please try again in a few moments.' });
+        await interaction.editReply('Rate limit exceeded. Please try again in a few moments.');
       } else {
-        await interaction.editReply({ content: 'Command failed. Please try again later.' });
+        await interaction.editReply('Command failed. Please try again later.');
       }
     }
   }
