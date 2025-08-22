@@ -23,6 +23,11 @@ const AUTH_HEADERS = API_KEY
   ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
   : {};
 
+// Colors
+const COLOR_BLUE = 0x2b90d9;
+const COLOR_GREEN = 0x3fbf7f;
+const COLOR_RED = 0xff5555;
+
 const questionTypeOptions = ["MCQ", "FRQ"];
 const divisionOptions = ["Division C"];
 const difficultyOptions = [
@@ -65,7 +70,7 @@ function resolveCorrectIndex(question) {
 
 function buildQuestionEmbed(question) {
   const embed = new EmbedBuilder()
-    .setColor(0x0099ff)
+    .setColor(COLOR_BLUE)
     .setTitle('Anatomy - Nervous')
     .setDescription(question.question || 'No question text');
 
@@ -167,13 +172,13 @@ module.exports = {
 
       const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params: baseParams, timeout: 15000 });
       if (!listRes.data?.success) {
-        await interaction.editReply({ content: 'API error. Please try again later.' });
+        await interaction.editReply('API error. Please try again later.');
         return;
       }
 
       const first = pickFirstQuestion(listRes.data.data);
       if (!first) {
-        await interaction.editReply({ content: 'No questions found matching your criteria. Try different filters.' });
+        await interaction.editReply('No questions found matching your criteria. Try different filters.');
         return;
       }
 
@@ -185,21 +190,15 @@ module.exports = {
             question = detailRes.data.data;
           }
         } catch {
+          // ignore detail fetch fail; use first
         }
       }
 
       // Validate question data
       if (!question.question) {
-        await interaction.editReply({ content: 'Question data is incomplete. Please try again.' });
+        await interaction.editReply('Question data is incomplete. Please try again.');
         return;
       }
-      
-      console.log('[anatomynervous] Question loaded:', {
-        id: question.id,
-        hasOptions: Array.isArray(question.options) && question.options.length > 0,
-        hasAnswers: Array.isArray(question.answers) && question.answers.length > 0,
-        questionType: Array.isArray(question.options) && question.options.length > 0 ? 'MCQ' : 'FRQ'
-      });
       
       const embed = buildQuestionEmbed(question);
       const components = [buildButtonsRow(question.id || interaction.id)];
@@ -214,7 +213,7 @@ module.exports = {
       collector.on('collect', async (btn) => {
         try {
           if (btn.user.id !== interaction.user.id) {
-            // Keep this ephemeral to avoid channel spam from non-requesters
+            // keep ephemeral to avoid channel spam
             await btn.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
             return;
           }
@@ -222,12 +221,6 @@ module.exports = {
           if (btn.customId === `check_${question.id || interaction.id}`) {
             const isMCQ = Array.isArray(question.options) && question.options.length > 0;
             const modalId = `check_modal_${sent.id}`;
-            
-            console.log('[anatomynervous] Check button clicked:', {
-              isMCQ,
-              hasOptions: Array.isArray(question.options) && question.options.length > 0,
-              optionsCount: question.options?.length || 0
-            });
 
             const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
             const input = new TextInputBuilder()
@@ -255,62 +248,38 @@ module.exports = {
             if (isMCQ) {
               const options = question.options || [];
               if (!options.length) {
-                const errorEmbed = new EmbedBuilder()
-                  .setColor(0xff5555)
-                  .setTitle('🧪 Answer Check')
-                  .setDescription('This question has no options — cannot check as MCQ.');
-                await submission.reply({ embeds: [errorEmbed] });
+                await submission.reply('This question has no options — cannot check as MCQ.');
                 return;
               }
               const letter = (userAnswer[0] || '').toUpperCase();
               const idx = letter.charCodeAt(0) - 65;
               if (!(idx >= 0 && idx < options.length)) {
-                const invalidEmbed = new EmbedBuilder()
-                  .setColor(0xffaa00)
-                  .setTitle('🧪 Answer Check')
-                  .setDescription(`Invalid choice. Please enter a letter between **A** and **${letterFromIndex(options.length - 1)}**.`);
-                await submission.reply({ embeds: [invalidEmbed] });
+                await submission.reply(`Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.`);
                 return;
               }
               const correctIdx = resolveCorrectIndex(question);
               const correctLetter = letterFromIndex(correctIdx);
               const correctText = options[correctIdx];
               const userText = options[idx];
-
               const correct = idx === correctIdx;
 
               const resultEmbed = new EmbedBuilder()
-                .setColor(correct ? 0x3fbf7f : 0xff5555)
-                .setTitle('🧪 Answer Check')
+                .setColor(correct ? COLOR_GREEN : COLOR_RED)
+                .setTitle(correct ? '✅ Correct!' : '❌ Wrong.')
                 .addFields(
                   { name: 'Your answer', value: `**${letter})** ${userText}`, inline: true },
                   { name: 'Correct answer', value: `**${correctLetter})** ${correctText}`, inline: true },
-                )
-                .setFooter({ text: correct ? 'Nice job!' : 'Keep practicing — you’ve got this.' });
+                );
 
               await submission.reply({ embeds: [resultEmbed] });
             } else {
               // FRQ grading
               try {
-                console.log('[anatomynervous] Starting FRQ grading for:', {
-                  questionText: question.question?.substring(0, 100) + '...',
-                  userAnswer: userAnswer.substring(0, 100) + '...',
-                  correctAnswers: question.answers
-                });
-                
                 const correctAnswers =
                   Array.isArray(question.answers)
                     ? question.answers.map(a => String(a))
                     : (typeof question.answers === 'string' ? [question.answers] : []);
                 
-                console.log('[anatomynervous] Prepared grading request:', {
-                  questionLength: question.question?.length,
-                  userAnswerLength: userAnswer.length,
-                  correctAnswersCount: correctAnswers.length,
-                  correctAnswers: correctAnswers
-                });
-                
-                // Single primary API only (fallback removed)
                 const requestBody = {
                   responses: [{ 
                     question: question.question, 
@@ -318,19 +287,9 @@ module.exports = {
                     studentAnswer: userAnswer
                   }]
                 };
-                console.log('[anatomynervous] Request body:', JSON.stringify(requestBody, null, 2));
 
-                let gradeRes;
-                console.log('[anatomynervous] Trying primary grading API...');
-                gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
+                const gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
 
-                console.log('[anatomynervous] Grading API response received:', {
-                  hasData: !!gradeRes.data?.data,
-                  dataKeys: gradeRes.data?.data ? Object.keys(gradeRes.data.data) : 'none',
-                  fullResponse: JSON.stringify(gradeRes.data, null, 2)
-                });
-                
-                // Handle the grading API response format
                 const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
                 let feedback = 'No detailed feedback available from the grading service.';
@@ -338,41 +297,30 @@ module.exports = {
                 let suggestions = [];
                 
                 if (grade) {
-                  // Full grade object with feedback
                   score = grade.score;
                   feedback = grade.feedback || 'No feedback provided.';
                   keyPoints = Array.isArray(grade.keyPoints) ? grade.keyPoints : [];
                   suggestions = Array.isArray(grade.suggestions) ? grade.suggestions : [];
                 } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
-                  // Scores-only format
                   score = gradeRes.data.data.scores[0];
-                  if (score >= 0.8) {
-                    feedback = 'Excellent answer! You covered the key points well.';
-                  } else if (score >= 0.6) {
-                    feedback = 'Good answer! You covered most of the key points.';
-                  } else if (score >= 0.4) {
-                    feedback = 'Fair answer. You covered some key points but could improve.';
-                  } else {
-                    feedback = 'The answer could be improved. Review the key concepts and try again.';
-                  }
+                  if (score >= 0.8) feedback = 'Excellent answer! You covered the key points well.';
+                  else if (score >= 0.6) feedback = 'Good answer! You covered most of the key points.';
+                  else if (score >= 0.4) feedback = 'Fair answer. You covered some key points but could improve.';
+                  else feedback = 'The answer could be improved. Review the key concepts and try again.';
                 } else {
-                  console.log('[anatomynervous] No score or grade found in response, showing error to user');
-                  const errorEmbed = new EmbedBuilder()
-                    .setColor(0xff5555)
-                    .setTitle('🧠 Grading Result')
-                    .setDescription('Grading service did not return a result. Please try again shortly.');
-                  await submission.reply({ embeds: [errorEmbed] });
+                  await submission.reply('Grading service did not return a result. Please try again shortly.');
                   return;
                 }
                 
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
+                const isCorrectByThreshold = (scorePct ?? 0) > 50;
                 const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
                   ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
                   : '—';
 
                 const resultEmbed = new EmbedBuilder()
-                  .setColor(0x5865f2)
-                  .setTitle('🧠 Grading Result')
+                  .setColor(isCorrectByThreshold ? COLOR_GREEN : COLOR_RED)
+                  .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong.')
                   .addFields(
                     ...(scorePct !== null ? [{ name: 'Score', value: `${scorePct}%`, inline: true }] : []),
                     { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
@@ -384,7 +332,6 @@ module.exports = {
                   const kp = keyPoints.map(p => `• ${p}`).join('\n').slice(0, 1024);
                   if (kp) resultEmbed.addFields({ name: 'Key Points Covered', value: kp, inline: false });
                 }
-
                 if (suggestions.length > 0) {
                   const sg = suggestions.map(s => `• ${s}`).join('\n').slice(0, 1024);
                   if (sg) resultEmbed.addFields({ name: 'Suggestions', value: sg, inline: false });
@@ -392,104 +339,67 @@ module.exports = {
                 
                 await submission.reply({ embeds: [resultEmbed] });
               } catch (err) {
-                console.error('[anatomynervous] FRQ grading error details:', {
-                  status: err?.response?.status,
-                  statusText: err?.response?.statusText,
-                  message: err?.message,
-                  data: err?.response?.data,
-                  fullError: err
-                });
-
-                const errEmbed = new EmbedBuilder().setTitle('🧠 Grading Error');
-
+                console.error('[anatomynervous] FRQ grading error:', err?.response?.status, err?.message);
                 if (err?.response?.status === 429) {
-                  errEmbed.setColor(0xffaa00).setDescription('⏳ The grading service is rate-limited right now. Please try again in a moment.');
+                  await submission.reply('⏳ The grading service is rate-limited right now. Please try again in a moment.');
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                  errEmbed.setColor(0xff5555).setDescription('🔒 Authentication failed for grading. Check your API key.');
+                  await submission.reply('🔒 Authentication failed for grading. Check your API key.');
                 } else if (err?.response?.status) {
-                  errEmbed
-                    .setColor(0xff5555)
-                    .setDescription(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
+                  await submission.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
                 } else {
-                  errEmbed
-                    .setColor(0xff5555)
-                    .setDescription(`Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
+                  await submission.reply(`Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
                 }
-
-                await submission.reply({ embeds: [errEmbed] });
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply(); // public, not ephemeral
+            await btn.deferReply(); // public
             try {
               const explanation = await getExplanationWithRetry(question, 'Anatomy - Nervous', AUTH_HEADERS, 'anatomynervous');
               const finalExplanation = explanation || 'No explanation available.';
 
               const explainEmbed = new EmbedBuilder()
-                .setColor(0x2b90d9)
+                .setColor(COLOR_BLUE)
                 .setTitle('📘 Explanation');
 
-              // If within embed limit, send as a single embed
               if (finalExplanation.length <= 4096) {
                 explainEmbed.setDescription(finalExplanation);
                 await btn.editReply({ embeds: [explainEmbed] });
               } else {
-                // Include a short note in the embed and attach full text so nothing is lost
                 explainEmbed.setDescription('The full explanation is attached as a file below.');
                 const buffer = Buffer.from(finalExplanation, 'utf-8');
                 await btn.editReply({ embeds: [explainEmbed], files: [{ attachment: buffer, name: 'explanation.txt' }] });
               }
             } catch (err) {
-              console.error('[anatomynervous] Explanation error details:', {
-                status: err?.response?.status,
-                statusText: err?.response?.statusText,
-                message: err?.message,
-                data: err?.response?.data,
-                fullError: err
-              });
-
-              const errEmbed = new EmbedBuilder().setTitle('📘 Explanation Error');
-
+              console.error('[anatomynervous] Explanation error:', err?.response?.status, err?.message);
               if (err?.response?.status === 429) {
-                errEmbed.setColor(0xffaa00).setDescription('⏳ The explanation service is rate-limited right now. Please try again in a moment.');
+                await btn.editReply('⏳ The explanation service is rate-limited right now. Please try again in a moment.');
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                errEmbed.setColor(0xff5555).setDescription('🔒 Authentication failed for explanation. Check your API key.');
+                await btn.editReply('🔒 Authentication failed for explanation. Check your API key.');
               } else if (err?.response?.status) {
-                errEmbed
-                  .setColor(0xff5555)
-                  .setDescription(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
+                await btn.editReply(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
               } else {
-                errEmbed
-                  .setColor(0xff5555)
-                  .setDescription(`Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
+                await btn.editReply(`Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
               }
-
-              await btn.editReply({ embeds: [errEmbed] });
             }
           }
         } catch (innerErr) {
           console.error('[anatomynervous] Button handler error:', innerErr);
           try {
             if (!btn.replied && !btn.deferred) {
-              const errEmbed = new EmbedBuilder()
-                .setColor(0xff5555)
-                .setTitle('Action Error')
-                .setDescription('Something went wrong handling that action.');
-              await btn.reply({ embeds: [errEmbed] });
+              await btn.reply('Something went wrong handling that action.');
             }
           } catch {}
         }
       });
 
-      collector.on('end', () => { /* buttons stop being handled after 30m; visuals remain */ });
+      collector.on('end', () => { /* buttons stop after 30m; visuals remain */ });
 
     } catch (err) {
       console.error('Error in Anatomy - Nervous command:', err);
-
       if (err.response?.status === 429) {
-        await interaction.editReply({ content: 'Rate limit exceeded. Please try again in a few moments.' });
+        await interaction.editReply('Rate limit exceeded. Please try again in a few moments.');
       } else {
-        await interaction.editReply({ content: 'Command failed. Please try again later.' });
+        await interaction.editReply('Command failed. Please try again later.');
       }
     }
   }
