@@ -15,7 +15,10 @@ const axios = require('axios');
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
 const FALLBACK_BASE = 'https://scioly-api.vercel.app';
-const API_KEY = process.env.SCIO_API_KEY || 'xo9IKNJG65e0LMBa55Tq'; // put your real key in env
+const API_KEY = process.env.SCIO_API_KEY;
+if (!API_KEY) {
+  console.warn('[anatomyendocrine] No SCIO_API_KEY found in environment variables. API calls may fail.');
+}
 const AUTH_HEADERS = API_KEY
   ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
   : {};
@@ -118,29 +121,7 @@ async function getJSON(base, path, params) {
   }
 }
 
-async function postJSONWithFallbacks(primaryBase, fallbackBase, path, bodyVariants) {
-  const headers = { ...AUTH_HEADERS, 'Content-Type': 'application/json' };
 
-  // Try each body variant against primary, then fallback host.
-  for (const body of bodyVariants) {
-    try {
-      const res = await axios.post(`${primaryBase}${path}`, body, { headers });
-      return res;
-    } catch (err) {
-      console.error('[POST primary]', path, 'bodyKeys:', Object.keys(body), 'status:', err?.response?.status, 'data:', err?.response?.data);
-      // Try fallback host immediately for this body variant
-      try {
-        const res2 = await axios.post(`${fallbackBase}${path}`, body, { headers });
-        return res2;
-      } catch (err2) {
-        console.error('[POST fallback]', path, 'bodyKeys:', Object.keys(body), 'status:', err2?.response?.status, 'data:', err2?.response?.data);
-        // continue loop to next body variant
-      }
-    }
-  }
-  // If all attempts fail, throw a generic error
-  throw new Error('All AI endpoint attempts failed');
-}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -208,6 +189,20 @@ module.exports = {
       }
 
       const question = res.data.data[0];
+      
+      // Validate question data
+      if (!question.question) {
+        await interaction.editReply({ content: 'Question data is incomplete. Please try again.' });
+        return;
+      }
+      
+      console.log('[anatomyendocrine] Question loaded:', {
+        id: question.id,
+        hasOptions: Array.isArray(question.options) && question.options.length > 0,
+        hasAnswers: Array.isArray(question.answers) && question.answers.length > 0,
+        questionType: Array.isArray(question.options) && question.options.length > 0 ? 'MCQ' : 'FRQ'
+      });
+      
       const embed = buildQuestionEmbed(question);
       const components = [buildButtonsRow(question.id || interaction.id)];
       const sent = await interaction.editReply({ embeds: [embed], components });
@@ -228,6 +223,12 @@ module.exports = {
           if (btn.customId === `check_${question.id || interaction.id}`) {
             const isMCQ = Array.isArray(question.options) && question.options.length > 0;
             const modalId = `check_modal_${sent.id}`;
+            
+            console.log('[anatomyendocrine] Check button clicked:', {
+              isMCQ,
+              hasOptions: Array.isArray(question.options) && question.options.length > 0,
+              optionsCount: question.options?.length || 0
+            });
 
             const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
             const input = new TextInputBuilder()
@@ -280,36 +281,44 @@ module.exports = {
                   `\n**Your answer:** ${letter}) ${userText}\n**Correct answer:** ${correctLetter}) ${correctText}`,
               });
             } else {
-              // FRQ grading with resilient body/host fallbacks
+              // FRQ grading
               try {
+                console.log('[anatomyendocrine] Starting FRQ grading for:', {
+                  questionText: question.question?.substring(0, 100) + '...',
+                  userAnswer: userAnswer.substring(0, 100) + '...',
+                  correctAnswers: question.answers
+                });
+                
                 const correctAnswers =
                   Array.isArray(question.answers)
                     ? question.answers.map(a => String(a))
                     : (typeof question.answers === 'string' ? [question.answers] : []);
 
-                const bodyVariants = [
-                  { responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }] },     // per docs
-                  { freeResponses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }] }, // legacy shape
-                ];
-
-                const gradeRes = await postJSONWithFallbacks(PRIMARY_BASE, FALLBACK_BASE, '/api/gemini/grade-free-responses', bodyVariants);
-                const grade = gradeRes.data?.data?.grades?.[0];
-
-                if (!grade) {
-                  // Some backends may return data array directly
-                  const altGrade = Array.isArray(gradeRes.data?.data) ? gradeRes.data.data[0] : null;
-                  if (!altGrade) {
-                    await submission.reply({
-                      ephemeral: true,
-                      content: 'Grading service did not return a result. Please try again shortly.',
-                    });
-                    return;
-                  }
+                // Try the primary API first
+                let gradeRes;
+                try {
+                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, {
+                    responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
+                  }, { headers: AUTH_HEADERS });
+                } catch (primaryErr) {
+                  console.log('[anatomyendocrine] Primary grading API failed, trying fallback:', primaryErr?.response?.status);
+                  // Try fallback API
+                  gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
+                    responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
+                  }, { headers: AUTH_HEADERS });
                 }
 
-                const result = grade || gradeRes.data.data[0];
-                const scorePct = typeof result.score === 'number' ? Math.round(result.score * 100) : null;
-                const feedback = result.feedback || 'No feedback provided.';
+                const grade = gradeRes.data?.data?.grades?.[0];
+                if (!grade) {
+                  await submission.reply({
+                    ephemeral: true,
+                    content: 'Grading service did not return a result. Please try again shortly.',
+                  });
+                  return;
+                }
+
+                const scorePct = typeof grade.score === 'number' ? Math.round(grade.score * 100) : null;
+                const feedback = grade.feedback || 'No feedback provided.';
                 const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
 
                 await submission.reply({
@@ -320,48 +329,61 @@ module.exports = {
                     `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`,
                 });
               } catch (err) {
+                console.error('[anatomyendocrine] FRQ grading error:', err?.response?.status, err?.response?.data);
                 if (err?.response?.status === 429) {
                   await submission.reply({ ephemeral: true, content: '⏳ The grading service is rate-limited right now. Please try again in a moment.' });
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                  await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key headers.' });
+                  await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key.' });
                 } else {
-                  await submission.reply({ ephemeral: true, content: 'Grading failed. Please try again shortly.' });
+                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.response?.data?.message || 'Unknown error'}. Please try again shortly.` });
                 }
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
             await btn.deferReply({ ephemeral: true });
             try {
-              // Prefer sending a compact question object
-              const compact = {
-                id: question.id,
-                question: question.question,
-                event: question.event || 'Anatomy - Endocrine',
-                division: question.division,
-                options: question.options,
-                answers: question.answers,
-                subtopics: question.subtopics,
-                difficulty: question.difficulty,
-              };
+              // Try the primary API first
+              let explainRes;
+              try {
+                explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
+                  question: question.question,
+                  event: 'Anatomy - Endocrine',
+                  streaming: false
+                }, { headers: AUTH_HEADERS });
+              } catch (primaryErr) {
+                console.log('[anatomyendocrine] Primary explanation API failed, trying fallback:', primaryErr?.response?.status);
+                // Try fallback API
+                explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
+                  question: question.question,
+                  event: 'Anatomy - Endocrine',
+                  streaming: false
+                }, { headers: AUTH_HEADERS });
+              }
 
-              const bodyVariants = [
-                { question: compact, event: 'Anatomy - Endocrine', streaming: false }, // per docs (object)
-                { question: question.question, event: 'Anatomy - Endocrine', streaming: false }, // fallback (string)
-              ];
-
-              const explainRes = await postJSONWithFallbacks(PRIMARY_BASE, FALLBACK_BASE, '/api/gemini/explain', bodyVariants);
-              const explanation =
-                explainRes.data?.data?.explanation ||
-                (typeof explainRes.data?.data === 'string' ? explainRes.data.data : null) ||
-                'No explanation was returned.';
+              // Handle different response formats from the explanation API
+              let explanation = 'No explanation was returned.';
+              if (explainRes.data?.data) {
+                if (typeof explainRes.data.data === 'string') {
+                  explanation = explainRes.data.data;
+                } else if (explainRes.data.data.explanation) {
+                  explanation = explainRes.data.data.explanation;
+                } else if (explainRes.data.data.text) {
+                  explanation = explainRes.data.data.text;
+                } else {
+                  // Log the actual structure for debugging
+                  console.log('[anatomyendocrine] Explanation API response structure:', JSON.stringify(explainRes.data.data, null, 2));
+                  explanation = 'Explanation received but format is unexpected.';
+                }
+              }
               await btn.editReply({ content: `📘 **Explanation**\n${explanation}` });
             } catch (err) {
+              console.error('[anatomyendocrine] Explanation error:', err?.response?.status, err?.response?.data);
               if (err?.response?.status === 429) {
                 await btn.editReply({ content: '⏳ The explanation service is rate-limited right now. Please try again in a moment.' });
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key headers.' });
+                await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key.' });
               } else {
-                await btn.editReply({ content: 'Could not fetch an explanation at the moment. Please try again shortly.' });
+                await btn.editReply({ content: `Could not fetch an explanation: ${err?.response?.data?.message || 'Unknown error'}. Please try again shortly.` });
               }
             }
           }
