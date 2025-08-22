@@ -24,12 +24,12 @@ const AUTH_HEADERS = API_KEY
   : {};
 
 // Colors
-const COLOR_BLUE = 0x2b90d9;
-const COLOR_GREEN = 0x3fbf7f;
-const COLOR_RED = 0xff5555;
+const COLOR_BLUE = '#0000FF';
+const COLOR_GREEN = '#008000';
+const COLOR_RED = '#FF0000';
 
 const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division C"];
+const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
   "Very Easy (0-19%)",
   "Easy (20-39%)", 
@@ -123,7 +123,7 @@ function prune(obj) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('anatomynervous')
-    .setDescription('Get a Anatomy - Nervous question')
+    .setDescription('Get an Anatomy - Nervous question')
     .addStringOption(option =>
       option.setName('question_type')
         .setDescription('Question type (leave blank for random)')
@@ -225,10 +225,10 @@ module.exports = {
             const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
             const input = new TextInputBuilder()
               .setCustomId('answer_input')
-              .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
+              .setLabel(isMCQ ? 'Your answer' : 'Your answer')
               .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
               .setRequired(true)
-              .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here');
+              .setPlaceholder(isMCQ ? 'e.g., A' : 'Include all necessary details.');
             modal.addComponents(new ActionRowBuilder().addComponents(input));
             await btn.showModal(modal);
 
@@ -313,14 +313,14 @@ module.exports = {
                 }
                 
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
-                const isCorrectByThreshold = (scorePct ?? 0) > 50;
+                const isCorrectByThreshold = (scorePct ?? 0) > 40;
                 const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
                   ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
                   : '—';
 
                 const resultEmbed = new EmbedBuilder()
                   .setColor(isCorrectByThreshold ? COLOR_GREEN : COLOR_RED)
-                  .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong.')
+                  .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong')
                   .addFields(
                     ...(scorePct !== null ? [{ name: 'Score', value: `${scorePct}%`, inline: true }] : []),
                     { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
@@ -341,9 +341,9 @@ module.exports = {
               } catch (err) {
                 console.error('[anatomynervous] FRQ grading error:', err?.response?.status, err?.message);
                 if (err?.response?.status === 429) {
-                  await submission.reply('⏳ The grading service is rate-limited right now. Please try again in a moment.');
+                  await submission.reply('The grading service is rate-limited right now. Please try again in a moment.');
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                  await submission.reply('🔒 Authentication failed for grading. Check your API key.');
+                  await submission.reply('Authentication failed for grading. Check your API key.');
                 } else if (err?.response?.status) {
                   await submission.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
                 } else {
@@ -359,7 +359,7 @@ module.exports = {
 
               const explainEmbed = new EmbedBuilder()
                 .setColor(COLOR_BLUE)
-                .setTitle('📘 Explanation');
+                .setTitle('Explanation');
 
               if (finalExplanation.length <= 4096) {
                 explainEmbed.setDescription(finalExplanation);
@@ -372,9 +372,9 @@ module.exports = {
             } catch (err) {
               console.error('[anatomynervous] Explanation error:', err?.response?.status, err?.message);
               if (err?.response?.status === 429) {
-                await btn.editReply('⏳ The explanation service is rate-limited right now. Please try again in a moment.');
+                await btn.editReply('The explanation service is rate-limited right now. Please try again in a moment.');
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                await btn.editReply('🔒 Authentication failed for explanation. Check your API key.');
+                await btn.editReply('Authentication failed for explanation. Check your API key.');
               } else if (err?.response?.status) {
                 await btn.editReply(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
               } else {
