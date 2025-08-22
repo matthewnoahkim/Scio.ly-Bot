@@ -11,6 +11,7 @@ const {
   ComponentType 
 } = require('discord.js');
 const axios = require('axios');
+const { letterFromIndex, buildFullQuestionText, extractExplanation, getExplanationWithRetry } = require('../../shared-utils');
 
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
@@ -43,10 +44,6 @@ const difficultyMap = {
 };
 
 // ===== Helpers =====
-function letterFromIndex(idx) {
-  return String.fromCharCode(65 + idx);
-}
-
 function normalize(text) {
   return String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -423,56 +420,16 @@ module.exports = {
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
             await btn.deferReply({ ephemeral: true });
             try {
-              // Try the primary API first
-              let explainRes;
-              try {
-                console.log('[anatomynervous] Trying primary explanation API...');
-                explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
-                  question: question.question,
-                  event: 'Anatomy - Nervous',
-                  streaming: false
-                }, { headers: AUTH_HEADERS });
-                console.log('[anatomynervous] Primary explanation API success');
-              } catch (primaryErr) {
-                console.log('[anatomynervous] Primary explanation API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
-                // Try fallback API
-                try {
-                  console.log('[anatomynervous] Trying fallback explanation API...');
-                  explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
-                    question: question.question,
-                    event: 'Anatomy - Nervous',
-                    streaming: false
-                  }, { headers: AUTH_HEADERS });
-                  console.log('[anatomynervous] Fallback explanation API success');
-                } catch (fallbackErr) {
-                  console.log('[anatomynervous] Fallback explanation API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
-                  throw fallbackErr; // Re-throw to be caught by outer catch
-                }
-              }
-
-              // Handle different response formats from the explanation API
-              let explanation = 'No explanation was returned.';
-              if (explainRes.data?.data) {
-                if (typeof explainRes.data.data === 'string') {
-                  explanation = explainRes.data.data;
-                } else if (explainRes.data.data.explanation) {
-                  explanation = explainRes.data.data.explanation;
-                } else if (explainRes.data.data.text) {
-                  explanation = explainRes.data.data.text;
-                } else {
-                  // Log the actual structure for debugging
-                  console.log('[anatomynervous] Explanation API response structure:', JSON.stringify(explainRes.data.data, null, 2));
-                  explanation = 'Explanation received but format is unexpected.';
-                }
-              }
+              const explanation = await getExplanationWithRetry(question, 'Anatomy - Nervous', AUTH_HEADERS, 'anatomynervous');
               
               // Truncate explanation to fit Discord's 2000 character limit
               const maxLength = 1900; // Leave some room for formatting
-              if (explanation.length > maxLength) {
-                explanation = explanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
+              let finalExplanation = explanation;
+              if (finalExplanation.length > maxLength) {
+                finalExplanation = finalExplanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
               }
               
-              await btn.editReply({ content: `📘 **Explanation**\n${explanation}` });
+              await btn.editReply({ content: `📘 **Explanation**\n${finalExplanation}` });
             } catch (err) {
               console.error('[anatomynervous] Explanation error details:', {
                 status: err?.response?.status,
