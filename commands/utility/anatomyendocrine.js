@@ -293,7 +293,7 @@ module.exports = {
                   Array.isArray(question.answers)
                     ? question.answers.map(a => String(a))
                     : (typeof question.answers === 'string' ? [question.answers] : []);
-                
+
                 console.log('[anatomyendocrine] Prepared grading request:', {
                   questionLength: question.question?.length,
                   userAnswerLength: userAnswer.length,
@@ -370,13 +370,13 @@ module.exports = {
                 } else {
                   console.log('[anatomyendocrine] No score or grade found in response, showing error to user');
                   console.log('[anatomyendocrine] Available data keys:', Object.keys(gradeRes.data?.data || {}));
-                  await submission.reply({
-                    ephemeral: true,
-                    content: 'Grading service did not return a result. Please try again shortly.',
-                  });
-                  return;
+                    await submission.reply({
+                      ephemeral: true,
+                      content: 'Grading service did not return a result. Please try again shortly.',
+                    });
+                    return;
                 }
-                
+
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
                 const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
 
@@ -394,7 +394,7 @@ module.exports = {
                 if (suggestions.length > 0) {
                   feedbackContent += `\n\n**Suggestions for Improvement:**\n${suggestions.map(suggestion => `• ${suggestion}`).join('\n')}`;
                 }
-                
+
                 await submission.reply({
                   ephemeral: true,
                   content: feedbackContent,
@@ -437,7 +437,7 @@ module.exports = {
                 try {
                   console.log('[anatomyendocrine] Trying fallback explanation API...');
                   explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
-                    question: question.question,
+                question: question.question,
                     event: 'Anatomy - Endocrine',
                     streaming: false
                   }, { headers: AUTH_HEADERS });
