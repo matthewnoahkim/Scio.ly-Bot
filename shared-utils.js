@@ -72,32 +72,68 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
         console.log(`[${logPrefix}] Trying primary explanation API...`);
         const fullQuestionText = buildFullQuestionText(question);
         console.log(`[${logPrefix}] Full question text being sent:`, fullQuestionText);
-        explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
+        console.log(`[${logPrefix}] Question ID: ${question.id || 'no-id'}`);
+        const requestBody = {
           question: fullQuestionText,
           event: eventName,
-          streaming: false
-        }, { headers: authHeaders });
+          streaming: false,
+          questionId: question.id || null
+        };
+        console.log(`[${logPrefix}] API request body:`, JSON.stringify(requestBody, null, 2));
+        explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, requestBody, { headers: authHeaders });
         console.log(`[${logPrefix}] Primary explanation API success`);
       } else {
         console.log(`[${logPrefix}] Retry ${retryCount} with primary API...`);
         const fullQuestionText = buildFullQuestionText(question);
-        explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
+        console.log(`[${logPrefix}] Retry ${retryCount} - Same question text being sent:`, fullQuestionText);
+        console.log(`[${logPrefix}] Retry ${retryCount} - Question ID: ${question.id || 'no-id'}`);
+        const requestBody = {
           question: fullQuestionText,
           event: eventName,
-          streaming: false
-        }, { headers: authHeaders });
+          streaming: false,
+          questionId: question.id || null
+        };
+        console.log(`[${logPrefix}] Retry ${retryCount} - API request body:`, JSON.stringify(requestBody, null, 2));
+        explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, requestBody, { headers: authHeaders });
         console.log(`[${logPrefix}] Primary API retry ${retryCount} success`);
       }
       
       // Check if we got a valid explanation (not an error message)
       const tempExplanation = extractExplanation(explainRes.data);
       console.log(`[${logPrefix}] Temp explanation preview:`, tempExplanation ? tempExplanation.substring(0, 100) + '...' : 'null');
+      console.log(`[${logPrefix}] Full API response data:`, JSON.stringify(explainRes.data, null, 2));
       
       if (tempExplanation && 
           !tempExplanation.includes('I apologize, but you have not provided a question') &&
           !tempExplanation.includes('question itself was not provided') &&
           !tempExplanation.includes('Please provide the') &&
           tempExplanation.length > 50) { // Ensure it's a substantial response
+        
+        // Check if the explanation actually relates to our question
+        const questionKeywords = fullQuestionText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
+        const explanationLower = tempExplanation.toLowerCase();
+        const matchingKeywords = questionKeywords.filter(keyword => explanationLower.includes(keyword));
+        
+        console.log(`[${logPrefix}] Question keywords:`, questionKeywords.slice(0, 10));
+        console.log(`[${logPrefix}] Matching keywords in explanation:`, matchingKeywords);
+        console.log(`[${logPrefix}] Keyword match percentage: ${(matchingKeywords.length / questionKeywords.length * 100).toFixed(1)}%`);
+        
+        // If less than 30% of keywords match, this is definitely the wrong explanation
+        if (matchingKeywords.length / questionKeywords.length < 0.3) {
+          console.log(`[${logPrefix}] ERROR: Explanation is completely unrelated to the question! Only ${(matchingKeywords.length / questionKeywords.length * 100).toFixed(1)}% keyword match.`);
+          console.log(`[${logPrefix}] Question was about: "${fullQuestionText.substring(0, 100)}..."`);
+          console.log(`[${logPrefix}] But explanation is about: "${tempExplanation.substring(0, 100)}..."`);
+          if (retryCount < maxRetries) {
+            console.log(`[${logPrefix}] Will retry due to completely wrong explanation...`);
+            await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1))); // Longer delay
+            retryCount++;
+            continue;
+          } else {
+            console.log(`[${logPrefix}] All retries exhausted, returning error message`);
+            return 'The API returned an explanation for a different question. This appears to be an API issue. Please try again in a moment.';
+          }
+        }
+        
         console.log(`[${logPrefix}] Valid explanation received, breaking retry loop`);
         break;
       } else if (retryCount < maxRetries) {
