@@ -15,7 +15,6 @@ const { letterFromIndex, buildFullQuestionText, extractExplanation, getExplanati
 
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
-const FALLBACK_BASE = 'https://scioly-api.vercel.app';
 const API_KEY = process.env.SCIO_API_KEY;
 if (!API_KEY) {
   console.warn('[anatomynervous] No SCIO_API_KEY found in environment variables. API calls may fail.');
@@ -166,7 +165,7 @@ module.exports = {
         limit: 1
       });
 
-      const listRes = await axios.get('https://scio.ly/api/questions', { params: baseParams, timeout: 15000 });
+      const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params: baseParams, timeout: 15000 });
       if (!listRes.data?.success) {
         await interaction.editReply({ content: 'API error. Please try again later.' });
         return;
@@ -181,7 +180,7 @@ module.exports = {
       let question = first;
       if (!first.base52 && first.id) {
         try {
-          const detailRes = await axios.get(`https://scio.ly/api/questions/${first.id}`, { timeout: 15000 });
+          const detailRes = await axios.get(`${PRIMARY_BASE}/api/questions/${first.id}`, { timeout: 15000 });
           if (detailRes.data?.success && detailRes.data.data) {
             question = detailRes.data.data;
           }
@@ -215,6 +214,7 @@ module.exports = {
       collector.on('collect', async (btn) => {
         try {
           if (btn.user.id !== interaction.user.id) {
+            // Keep this ephemeral to avoid channel spam from non-requesters
             await btn.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
             return;
           }
@@ -255,16 +255,21 @@ module.exports = {
             if (isMCQ) {
               const options = question.options || [];
               if (!options.length) {
-                await submission.reply({ content: 'This question has no options — cannot check as MCQ.', ephemeral: true });
+                const errorEmbed = new EmbedBuilder()
+                  .setColor(0xff5555)
+                  .setTitle('🧪 Answer Check')
+                  .setDescription('This question has no options — cannot check as MCQ.');
+                await submission.reply({ embeds: [errorEmbed] });
                 return;
               }
               const letter = (userAnswer[0] || '').toUpperCase();
               const idx = letter.charCodeAt(0) - 65;
               if (!(idx >= 0 && idx < options.length)) {
-                await submission.reply({
-                  content: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.`,
-                  ephemeral: true,
-                });
+                const invalidEmbed = new EmbedBuilder()
+                  .setColor(0xffaa00)
+                  .setTitle('🧪 Answer Check')
+                  .setDescription(`Invalid choice. Please enter a letter between **A** and **${letterFromIndex(options.length - 1)}**.`);
+                await submission.reply({ embeds: [invalidEmbed] });
                 return;
               }
               const correctIdx = resolveCorrectIndex(question);
@@ -273,12 +278,17 @@ module.exports = {
               const userText = options[idx];
 
               const correct = idx === correctIdx;
-              await submission.reply({
-                ephemeral: true,
-                content:
-                  (correct ? '✅ **Correct!**' : '❌ **Incorrect.**') +
-                  `\n**Your answer:** ${letter}) ${userText}\n**Correct answer:** ${correctLetter}) ${correctText}`,
-              });
+
+              const resultEmbed = new EmbedBuilder()
+                .setColor(correct ? 0x3fbf7f : 0xff5555)
+                .setTitle('🧪 Answer Check')
+                .addFields(
+                  { name: 'Your answer', value: `**${letter})** ${userText}`, inline: true },
+                  { name: 'Correct answer', value: `**${correctLetter})** ${correctText}`, inline: true },
+                )
+                .setFooter({ text: correct ? 'Nice job!' : 'Keep practicing — you’ve got this.' });
+
+              await submission.reply({ embeds: [resultEmbed] });
             } else {
               // FRQ grading
               try {
@@ -300,7 +310,7 @@ module.exports = {
                   correctAnswers: correctAnswers
                 });
                 
-                // Use the exact format from the API documentation
+                // Single primary API only (fallback removed)
                 const requestBody = {
                   responses: [{ 
                     question: question.question, 
@@ -309,28 +319,10 @@ module.exports = {
                   }]
                 };
                 console.log('[anatomynervous] Request body:', JSON.stringify(requestBody, null, 2));
-                
-                // Try the primary API first
+
                 let gradeRes;
-                try {
-                  console.log('[anatomynervous] Trying primary grading API...');
-                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
-                  console.log('[anatomynervous] Primary grading API success, response structure:', Object.keys(gradeRes.data));
-                } catch (primaryErr) {
-                  console.log('[anatomynervous] Primary grading API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
-                  
-                  // Try fallback API with same format
-                  try {
-                    console.log('[anatomynervous] Trying fallback API...');
-                    gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
-                      responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
-                    }, { headers: AUTH_HEADERS });
-                    console.log('[anatomynervous] Fallback grading API success, response structure:', Object.keys(gradeRes.data));
-                  } catch (fallbackErr) {
-                    console.log('[anatomynervous] Fallback grading API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
-                    throw fallbackErr; // Re-throw to be caught by outer catch
-                  }
-                }
+                console.log('[anatomynervous] Trying primary grading API...');
+                gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
 
                 console.log('[anatomynervous] Grading API response received:', {
                   hasData: !!gradeRes.data?.data,
@@ -338,7 +330,7 @@ module.exports = {
                   fullResponse: JSON.stringify(gradeRes.data, null, 2)
                 });
                 
-                // Handle the grading API response format (currently returns scores, not grades)
+                // Handle the grading API response format
                 const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
                 let feedback = 'No detailed feedback available from the grading service.';
@@ -346,17 +338,14 @@ module.exports = {
                 let suggestions = [];
                 
                 if (grade) {
-                  // If we get the full grade object with feedback
+                  // Full grade object with feedback
                   score = grade.score;
                   feedback = grade.feedback || 'No feedback provided.';
-                  keyPoints = grade.keyPoints || [];
-                  suggestions = grade.suggestions || [];
+                  keyPoints = Array.isArray(grade.keyPoints) ? grade.keyPoints : [];
+                  suggestions = Array.isArray(grade.suggestions) ? grade.suggestions : [];
                 } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
-                  // Current API format: just scores
+                  // Scores-only format
                   score = gradeRes.data.data.scores[0];
-                  feedback = 'Score received but detailed feedback is not currently available from the grading service.';
-                  
-                  // Try to provide some basic feedback based on the score
                   if (score >= 0.8) {
                     feedback = 'Excellent answer! You covered the key points well.';
                   } else if (score >= 0.6) {
@@ -368,36 +357,40 @@ module.exports = {
                   }
                 } else {
                   console.log('[anatomynervous] No score or grade found in response, showing error to user');
-                  console.log('[anatomynervous] Available data keys:', Object.keys(gradeRes.data?.data || {}));
-                  await submission.reply({
-                    ephemeral: true,
-                    content: 'Grading service did not return a result. Please try again shortly.',
-                  });
+                  const errorEmbed = new EmbedBuilder()
+                    .setColor(0xff5555)
+                    .setTitle('🧠 Grading Result')
+                    .setDescription('Grading service did not return a result. Please try again shortly.');
+                  await submission.reply({ embeds: [errorEmbed] });
                   return;
                 }
                 
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
-                const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
-                
-                // Build the detailed feedback response
-                let feedbackContent = `🧠 **Grading Result**` +
-                  (scorePct !== null ? ` — **${scorePct}%**` : '') +
-                  `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`;
-                
-                // Add key points if available
+                const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
+                  ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+                  : '—';
+
+                const resultEmbed = new EmbedBuilder()
+                  .setColor(0x5865f2)
+                  .setTitle('🧠 Grading Result')
+                  .addFields(
+                    ...(scorePct !== null ? [{ name: 'Score', value: `${scorePct}%`, inline: true }] : []),
+                    { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+                    { name: 'Expected key points / answers', value: correctAnswersDisplay || '—', inline: false },
+                    { name: 'Feedback', value: feedback.slice(0, 1024) || '—', inline: false },
+                  );
+
                 if (keyPoints.length > 0) {
-                  feedbackContent += `\n\n**Key Points Covered:**\n${keyPoints.map(point => `• ${point}`).join('\n')}`;
+                  const kp = keyPoints.map(p => `• ${p}`).join('\n').slice(0, 1024);
+                  if (kp) resultEmbed.addFields({ name: 'Key Points Covered', value: kp, inline: false });
                 }
-                
-                // Add suggestions if available
+
                 if (suggestions.length > 0) {
-                  feedbackContent += `\n\n**Suggestions for Improvement:**\n${suggestions.map(suggestion => `• ${suggestion}`).join('\n')}`;
+                  const sg = suggestions.map(s => `• ${s}`).join('\n').slice(0, 1024);
+                  if (sg) resultEmbed.addFields({ name: 'Suggestions', value: sg, inline: false });
                 }
                 
-                await submission.reply({
-                  ephemeral: true,
-                  content: feedbackContent,
-                });
+                await submission.reply({ embeds: [resultEmbed] });
               } catch (err) {
                 console.error('[anatomynervous] FRQ grading error details:', {
                   status: err?.response?.status,
@@ -406,30 +399,46 @@ module.exports = {
                   data: err?.response?.data,
                   fullError: err
                 });
+
+                const errEmbed = new EmbedBuilder().setTitle('🧠 Grading Error');
+
                 if (err?.response?.status === 429) {
-                  await submission.reply({ ephemeral: true, content: '⏳ The grading service is rate-limited right now. Please try again in a moment.' });
+                  errEmbed.setColor(0xffaa00).setDescription('⏳ The grading service is rate-limited right now. Please try again in a moment.');
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                  await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key.' });
+                  errEmbed.setColor(0xff5555).setDescription('🔒 Authentication failed for grading. Check your API key.');
                 } else if (err?.response?.status) {
-                  await submission.reply({ ephemeral: true, content: `Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+                  errEmbed
+                    .setColor(0xff5555)
+                    .setDescription(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
                 } else {
-                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+                  errEmbed
+                    .setColor(0xff5555)
+                    .setDescription(`Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
                 }
+
+                await submission.reply({ embeds: [errEmbed] });
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply({ ephemeral: true });
+            await btn.deferReply(); // public, not ephemeral
             try {
               const explanation = await getExplanationWithRetry(question, 'Anatomy - Nervous', AUTH_HEADERS, 'anatomynervous');
-              
-              // Truncate explanation to fit Discord's 2000 character limit
-              const maxLength = 1900; // Leave some room for formatting
-              let finalExplanation = explanation;
-              if (finalExplanation.length > maxLength) {
-                finalExplanation = finalExplanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
+              const finalExplanation = explanation || 'No explanation available.';
+
+              const explainEmbed = new EmbedBuilder()
+                .setColor(0x2b90d9)
+                .setTitle('📘 Explanation');
+
+              // If within embed limit, send as a single embed
+              if (finalExplanation.length <= 4096) {
+                explainEmbed.setDescription(finalExplanation);
+                await btn.editReply({ embeds: [explainEmbed] });
+              } else {
+                // Include a short note in the embed and attach full text so nothing is lost
+                explainEmbed.setDescription('The full explanation is attached as a file below.');
+                const buffer = Buffer.from(finalExplanation, 'utf-8');
+                await btn.editReply({ embeds: [explainEmbed], files: [{ attachment: buffer, name: 'explanation.txt' }] });
               }
-              
-              await btn.editReply({ content: `📘 **Explanation**\n${finalExplanation}` });
             } catch (err) {
               console.error('[anatomynervous] Explanation error details:', {
                 status: err?.response?.status,
@@ -438,23 +447,35 @@ module.exports = {
                 data: err?.response?.data,
                 fullError: err
               });
-              
+
+              const errEmbed = new EmbedBuilder().setTitle('📘 Explanation Error');
+
               if (err?.response?.status === 429) {
-                await btn.editReply({ content: '⏳ The explanation service is rate-limited right now. Please try again in a moment.' });
+                errEmbed.setColor(0xffaa00).setDescription('⏳ The explanation service is rate-limited right now. Please try again in a moment.');
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
-                await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key.' });
+                errEmbed.setColor(0xff5555).setDescription('🔒 Authentication failed for explanation. Check your API key.');
               } else if (err?.response?.status) {
-                await btn.editReply({ content: `Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+                errEmbed
+                  .setColor(0xff5555)
+                  .setDescription(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
               } else {
-                await btn.editReply({ content: `Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+                errEmbed
+                  .setColor(0xff5555)
+                  .setDescription(`Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
               }
+
+              await btn.editReply({ embeds: [errEmbed] });
             }
           }
         } catch (innerErr) {
           console.error('[anatomynervous] Button handler error:', innerErr);
           try {
             if (!btn.replied && !btn.deferred) {
-              await btn.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
+              const errEmbed = new EmbedBuilder()
+                .setColor(0xff5555)
+                .setTitle('Action Error')
+                .setDescription('Something went wrong handling that action.');
+              await btn.reply({ embeds: [errEmbed] });
             }
           } catch {}
         }
