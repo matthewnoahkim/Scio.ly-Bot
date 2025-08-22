@@ -59,8 +59,12 @@ async function testAPI() {
     
     console.log('Grading API success');
     console.log('Response structure:', Object.keys(gradeRes.data));
+    console.log('Data keys:', Object.keys(gradeRes.data.data || {}));
     if (gradeRes.data.data && gradeRes.data.data.grades) {
       console.log('Grade sample:', gradeRes.data.data.grades[0]);
+    } else if (gradeRes.data.data && gradeRes.data.data.scores) {
+      console.log('Score sample:', gradeRes.data.data.scores[0]);
+      console.log('Full response data:', JSON.stringify(gradeRes.data.data, null, 2));
     }
   } catch (err) {
     console.log('Grading API failed:', err.response?.status, err.response?.data?.message || err.message);

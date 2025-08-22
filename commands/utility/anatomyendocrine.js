@@ -305,15 +305,24 @@ module.exports = {
                 let gradeRes;
                 try {
                   console.log('[anatomyendocrine] Trying primary grading API...');
-                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, {
-                    responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
-                  }, { headers: AUTH_HEADERS });
+                  // Use the exact format from the API documentation
+                  const requestBody = {
+                    responses: [{ 
+                      question: question.question, 
+                      correctAnswers, 
+                      studentAnswer: userAnswer
+                    }]
+                  };
+                  console.log('[anatomyendocrine] Request body:', JSON.stringify(requestBody, null, 2));
+                  
+                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
                   console.log('[anatomyendocrine] Primary grading API success, response structure:', Object.keys(gradeRes.data));
                 } catch (primaryErr) {
                   console.log('[anatomyendocrine] Primary grading API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
-                  // Try fallback API
+                  
+                  // Try fallback API with same format
                   try {
-                    console.log('[anatomyendocrine] Trying fallback grading API...');
+                    console.log('[anatomyendocrine] Trying fallback API...');
                     gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
                       responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
                     }, { headers: AUTH_HEADERS });
@@ -330,43 +339,65 @@ module.exports = {
                   fullResponse: JSON.stringify(gradeRes.data, null, 2)
                 });
                 
-                // Handle different response formats from the grading API
+                // Handle the grading API response format (currently returns scores, not grades)
+                const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
-                let feedback = 'No feedback provided.';
+                let feedback = 'No detailed feedback available from the grading service.';
+                let keyPoints = [];
+                let suggestions = [];
                 
-                if (gradeRes.data?.data?.grades?.[0]) {
-                  // Format: { grades: [{ score: 0.5, feedback: "..." }] }
-                  const grade = gradeRes.data.data.grades[0];
+                if (grade) {
+                  // If we get the full grade object with feedback
                   score = grade.score;
                   feedback = grade.feedback || 'No feedback provided.';
+                  keyPoints = grade.keyPoints || [];
+                  suggestions = grade.suggestions || [];
                 } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
-                  // Format: { scores: [0.5] } (no feedback)
+                  // Current API format: just scores
                   score = gradeRes.data.data.scores[0];
-                  feedback = 'Score received but no detailed feedback available.';
-                } else if (gradeRes.data?.data?.score !== undefined) {
-                  // Format: { score: 0.5 } (single score)
-                  score = gradeRes.data.data.score;
-                  feedback = 'Score received but no detailed feedback available.';
-                }
-                
-                if (score === null) {
-                  console.log('[anatomyendocrine] No score found in response, showing error to user');
+                  feedback = 'Score received but detailed feedback is not currently available from the grading service.';
+                  
+                  // Try to provide some basic feedback based on the score
+                  if (score >= 0.8) {
+                    feedback = 'Excellent answer! You covered the key points well.';
+                  } else if (score >= 0.6) {
+                    feedback = 'Good answer! You covered most of the key points.';
+                  } else if (score >= 0.4) {
+                    feedback = 'Fair answer. You covered some key points but could improve.';
+                  } else {
+                    feedback = 'The answer could be improved. Review the key concepts and try again.';
+                  }
+                } else {
+                  console.log('[anatomyendocrine] No score or grade found in response, showing error to user');
+                  console.log('[anatomyendocrine] Available data keys:', Object.keys(gradeRes.data?.data || {}));
                   await submission.reply({
                     ephemeral: true,
                     content: 'Grading service did not return a result. Please try again shortly.',
                   });
                   return;
                 }
-
+                
                 const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
                 const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
 
+                // Build the detailed feedback response
+                let feedbackContent = `🧠 **Grading Result**` +
+                  (scorePct !== null ? ` — **${scorePct}%**` : '') +
+                  `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`;
+                
+                // Add key points if available
+                if (keyPoints.length > 0) {
+                  feedbackContent += `\n\n**Key Points Covered:**\n${keyPoints.map(point => `• ${point}`).join('\n')}`;
+                }
+                
+                // Add suggestions if available
+                if (suggestions.length > 0) {
+                  feedbackContent += `\n\n**Suggestions for Improvement:**\n${suggestions.map(suggestion => `• ${suggestion}`).join('\n')}`;
+                }
+                
                 await submission.reply({
                   ephemeral: true,
-                  content:
-                    `🧠 **Grading Result**` +
-                    (scorePct !== null ? ` — **${scorePct}%**` : '') +
-                    `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`,
+                  content: feedbackContent,
                 });
               } catch (err) {
                 console.error('[anatomyendocrine] FRQ grading error details:', {
