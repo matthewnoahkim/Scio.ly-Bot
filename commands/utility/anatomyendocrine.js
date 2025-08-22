@@ -281,7 +281,7 @@ module.exports = {
                   `\n**Your answer:** ${letter}) ${userText}\n**Correct answer:** ${correctLetter}) ${correctText}`,
               });
             } else {
-              // FRQ grading
+                            // FRQ grading
               try {
                 console.log('[anatomyendocrine] Starting FRQ grading for:', {
                   questionText: question.question?.substring(0, 100) + '...',
@@ -293,23 +293,64 @@ module.exports = {
                   Array.isArray(question.answers)
                     ? question.answers.map(a => String(a))
                     : (typeof question.answers === 'string' ? [question.answers] : []);
-
+                
+                console.log('[anatomyendocrine] Prepared grading request:', {
+                  questionLength: question.question?.length,
+                  userAnswerLength: userAnswer.length,
+                  correctAnswersCount: correctAnswers.length,
+                  correctAnswers: correctAnswers
+                });
+                
                 // Try the primary API first
                 let gradeRes;
                 try {
+                  console.log('[anatomyendocrine] Trying primary grading API...');
                   gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, {
                     responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
                   }, { headers: AUTH_HEADERS });
+                  console.log('[anatomyendocrine] Primary grading API success, response structure:', Object.keys(gradeRes.data));
                 } catch (primaryErr) {
-                  console.log('[anatomyendocrine] Primary grading API failed, trying fallback:', primaryErr?.response?.status);
+                  console.log('[anatomyendocrine] Primary grading API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
                   // Try fallback API
-                  gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
-                    responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
-                  }, { headers: AUTH_HEADERS });
+                  try {
+                    console.log('[anatomyendocrine] Trying fallback grading API...');
+                    gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
+                      responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
+                    }, { headers: AUTH_HEADERS });
+                    console.log('[anatomyendocrine] Fallback grading API success, response structure:', Object.keys(gradeRes.data));
+                  } catch (fallbackErr) {
+                    console.log('[anatomyendocrine] Fallback grading API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
+                    throw fallbackErr; // Re-throw to be caught by outer catch
+                  }
                 }
 
-                const grade = gradeRes.data?.data?.grades?.[0];
-                if (!grade) {
+                console.log('[anatomyendocrine] Grading API response received:', {
+                  hasData: !!gradeRes.data?.data,
+                  dataKeys: gradeRes.data?.data ? Object.keys(gradeRes.data.data) : 'none',
+                  fullResponse: JSON.stringify(gradeRes.data, null, 2)
+                });
+                
+                // Handle different response formats from the grading API
+                let score = null;
+                let feedback = 'No feedback provided.';
+                
+                if (gradeRes.data?.data?.grades?.[0]) {
+                  // Format: { grades: [{ score: 0.5, feedback: "..." }] }
+                  const grade = gradeRes.data.data.grades[0];
+                  score = grade.score;
+                  feedback = grade.feedback || 'No feedback provided.';
+                } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
+                  // Format: { scores: [0.5] } (no feedback)
+                  score = gradeRes.data.data.scores[0];
+                  feedback = 'Score received but no detailed feedback available.';
+                } else if (gradeRes.data?.data?.score !== undefined) {
+                  // Format: { score: 0.5 } (single score)
+                  score = gradeRes.data.data.score;
+                  feedback = 'Score received but no detailed feedback available.';
+                }
+                
+                if (score === null) {
+                  console.log('[anatomyendocrine] No score found in response, showing error to user');
                   await submission.reply({
                     ephemeral: true,
                     content: 'Grading service did not return a result. Please try again shortly.',
@@ -317,8 +358,7 @@ module.exports = {
                   return;
                 }
 
-                const scorePct = typeof grade.score === 'number' ? Math.round(grade.score * 100) : null;
-                const feedback = grade.feedback || 'No feedback provided.';
+                const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
                 const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
 
                 await submission.reply({
@@ -329,13 +369,21 @@ module.exports = {
                     `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`,
                 });
               } catch (err) {
-                console.error('[anatomyendocrine] FRQ grading error:', err?.response?.status, err?.response?.data);
+                console.error('[anatomyendocrine] FRQ grading error details:', {
+                  status: err?.response?.status,
+                  statusText: err?.response?.statusText,
+                  message: err?.message,
+                  data: err?.response?.data,
+                  fullError: err
+                });
                 if (err?.response?.status === 429) {
                   await submission.reply({ ephemeral: true, content: '⏳ The grading service is rate-limited right now. Please try again in a moment.' });
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
                   await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key.' });
+                } else if (err?.response?.status) {
+                  await submission.reply({ ephemeral: true, content: `Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
                 } else {
-                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.response?.data?.message || 'Unknown error'}. Please try again shortly.` });
+                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
                 }
               }
             }
@@ -345,19 +393,28 @@ module.exports = {
               // Try the primary API first
               let explainRes;
               try {
+                console.log('[anatomyendocrine] Trying primary explanation API...');
                 explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
                   question: question.question,
                   event: 'Anatomy - Endocrine',
                   streaming: false
                 }, { headers: AUTH_HEADERS });
+                console.log('[anatomyendocrine] Primary explanation API success');
               } catch (primaryErr) {
-                console.log('[anatomyendocrine] Primary explanation API failed, trying fallback:', primaryErr?.response?.status);
+                console.log('[anatomyendocrine] Primary explanation API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
                 // Try fallback API
-                explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
-                  question: question.question,
-                  event: 'Anatomy - Endocrine',
-                  streaming: false
-                }, { headers: AUTH_HEADERS });
+                try {
+                  console.log('[anatomyendocrine] Trying fallback explanation API...');
+                  explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
+                    question: question.question,
+                    event: 'Anatomy - Endocrine',
+                    streaming: false
+                  }, { headers: AUTH_HEADERS });
+                  console.log('[anatomyendocrine] Fallback explanation API success');
+                } catch (fallbackErr) {
+                  console.log('[anatomyendocrine] Fallback explanation API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
+                  throw fallbackErr; // Re-throw to be caught by outer catch
+                }
               }
 
               // Handle different response formats from the explanation API
@@ -375,15 +432,31 @@ module.exports = {
                   explanation = 'Explanation received but format is unexpected.';
                 }
               }
+              
+              // Truncate explanation to fit Discord's 2000 character limit
+              const maxLength = 1900; // Leave some room for formatting
+              if (explanation.length > maxLength) {
+                explanation = explanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
+              }
+              
               await btn.editReply({ content: `📘 **Explanation**\n${explanation}` });
             } catch (err) {
-              console.error('[anatomyendocrine] Explanation error:', err?.response?.status, err?.response?.data);
+              console.error('[anatomyendocrine] Explanation error details:', {
+                status: err?.response?.status,
+                statusText: err?.response?.statusText,
+                message: err?.message,
+                data: err?.response?.data,
+                fullError: err
+              });
+              
               if (err?.response?.status === 429) {
                 await btn.editReply({ content: '⏳ The explanation service is rate-limited right now. Please try again in a moment.' });
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
                 await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key.' });
+              } else if (err?.response?.status) {
+                await btn.editReply({ content: `Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
               } else {
-                await btn.editReply({ content: `Could not fetch an explanation: ${err?.response?.data?.message || 'Unknown error'}. Please try again shortly.` });
+                await btn.editReply({ content: `Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
               }
             }
           }
