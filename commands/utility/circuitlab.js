@@ -1,9 +1,30 @@
 // /commands/circuitlab.js
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { 
+  SlashCommandBuilder, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  ModalBuilder, 
+  TextInputBuilder, 
+  TextInputStyle, 
+  ComponentType 
+} = require('discord.js');
 const axios = require('axios');
 
+// ====== Config ======
+const PRIMARY_BASE = 'https://scio.ly';
+const FALLBACK_BASE = 'https://scioly-api.vercel.app';
+const API_KEY = process.env.SCIO_API_KEY;
+if (!API_KEY) {
+  console.warn('[circuitlab] No SCIO_API_KEY found in environment variables. API calls may fail.');
+}
+const AUTH_HEADERS = API_KEY
+  ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
+  : {};
+
 const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division B", "Division C"];
+const divisionOptions = ["Division C"];
 const difficultyOptions = [
   "Very Easy (0-19%)",
   "Easy (20-39%)", 
@@ -20,6 +41,71 @@ const difficultyMap = {
   "Hard (60-79%)": { min: 0.6, max: 0.79 },
   "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
 };
+
+// ===== Helpers =====
+function letterFromIndex(idx) {
+  return String.fromCharCode(65 + idx);
+}
+
+function normalize(text) {
+  return String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function resolveCorrectIndex(question) {
+  const { options = [], answers = [] } = question || {};
+  if (!Array.isArray(options) || options.length === 0) return null;
+  const a0 = answers?.[0];
+  if (typeof a0 === 'number' && Number.isFinite(a0)) {
+    if (a0 >= 0 && a0 < options.length) return a0; // 0-based
+    if (a0 >= 1 && a0 <= options.length) return a0 - 1; // 1-based
+  } else if (typeof a0 === 'string') {
+    const target = normalize(a0);
+    const idx = options.findIndex((opt) => normalize(opt) === target);
+    if (idx !== -1) return idx;
+  }
+  console.warn('[circuitlab] Could not resolve correct index from answers:', answers);
+  return 0;
+}
+
+function buildQuestionEmbed(question) {
+  const embed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle('Circuit Lab')
+    .setDescription(question.question || 'No question text');
+
+  const fields = [];
+  if (Array.isArray(question.options) && question.options.length > 0) {
+    const answerChoices = question.options
+      .map((opt, i) => `**${letterFromIndex(i)})** ${opt}`)
+      .join('\n');
+    fields.push({ name: 'Answer Choices', value: answerChoices, inline: false });
+  }
+
+  fields.push(
+    { name: 'Division', value: String(question.division ?? '—'), inline: true },
+    {
+      name: 'Difficulty',
+      value: typeof question.difficulty === 'number' ? `${Math.round(question.difficulty * 100)}%` : '—',
+      inline: true,
+    },
+    {
+      name: 'Subtopic(s)',
+      value: Array.isArray(question.subtopics) && question.subtopics.length ? question.subtopics.join(', ') : 'None',
+      inline: true,
+    },
+  );
+
+  embed.addFields(fields);
+  embed.setFooter({ text: 'Use the buttons below.' });
+  return embed;
+}
+
+function buildButtonsRow(qid) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`check_${qid}`).setLabel('Check answer').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`explain_${qid}`).setLabel('Explain question').setStyle(ButtonStyle.Secondary),
+  );
+}
 
 function pickFirstQuestion(data) {
   if (!data) return null;
@@ -106,31 +192,318 @@ module.exports = {
         }
       }
 
-      const embed = new EmbedBuilder()
-        .setColor(0x0099FF)
-        .setTitle('Circuit Lab')
-        .setDescription(question.question ?? '—');
-
-      const fields = [];
-
-      if (Array.isArray(question.options) && question.options.length > 0) {
-        const answerChoices = question.options
-          .map((opt, i) => `**${String.fromCharCode(65 + i)})** ${opt}`)
-          .join('\n');
-        fields.push({ name: '**Answer Choices:**', value: answerChoices, inline: false });
+      // Validate question data
+      if (!question.question) {
+        await interaction.editReply({ content: 'Question data is incomplete. Please try again.' });
+        return;
       }
+      
+      console.log('[circuitlab] Question loaded:', {
+        id: question.id,
+        hasOptions: Array.isArray(question.options) && question.options.length > 0,
+        hasAnswers: Array.isArray(question.answers) && question.answers.length > 0,
+        questionType: Array.isArray(question.options) && question.options.length > 0 ? 'MCQ' : 'FRQ'
+      });
+      
+      const embed = buildQuestionEmbed(question);
+      const components = [buildButtonsRow(question.id || interaction.id)];
+      const sent = await interaction.editReply({ embeds: [embed], components });
 
-      fields.push(
-        { name: '**Division:**', value: String(question.division ?? '—'), inline: true },
-        { name: '**Difficulty:**', value: Number.isFinite(question.difficulty) ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
-        { name: '**Subtopic(s):**', value: (question.subtopics && question.subtopics.length) ? question.subtopics.join(', ') : 'None', inline: true },
-        { name: '**Question ID:**', value: String(question.base52 ?? question.id ?? '—'), inline: false }
-      );
+      const collector = sent.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 30 * 60 * 1000,
+        filter: (i) => i.message.id === sent.id,
+      });
 
-      embed.addFields(...fields);
-      embed.setFooter({ text: 'Use /check to check your answer!' });
+      collector.on('collect', async (btn) => {
+        try {
+          if (btn.user.id !== interaction.user.id) {
+            await btn.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
+            return;
+          }
 
-      await interaction.editReply({ embeds: [embed] });
+          if (btn.customId === `check_${question.id || interaction.id}`) {
+            const isMCQ = Array.isArray(question.options) && question.options.length > 0;
+            const modalId = `check_modal_${sent.id}`;
+            
+            console.log('[circuitlab] Check button clicked:', {
+              isMCQ,
+              hasOptions: Array.isArray(question.options) && question.options.length > 0,
+              optionsCount: question.options?.length || 0
+            });
+
+            const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
+            const input = new TextInputBuilder()
+              .setCustomId('answer_input')
+              .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
+              .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here');
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+            await btn.showModal(modal);
+
+            let submission;
+            try {
+              submission = await btn.awaitModalSubmit({
+                time: 5 * 60 * 1000,
+                filter: (i) => i.customId === modalId && i.user.id === interaction.user.id,
+              });
+            } catch {
+              return;
+            }
+
+            const userAnswerRaw = submission.fields.getTextInputValue('answer_input');
+            const userAnswer = String(userAnswerRaw || '').trim();
+
+            if (isMCQ) {
+              const options = question.options || [];
+              if (!options.length) {
+                await submission.reply({ content: 'This question has no options — cannot check as MCQ.', ephemeral: true });
+                return;
+              }
+              const letter = (userAnswer[0] || '').toUpperCase();
+              const idx = letter.charCodeAt(0) - 65;
+              if (!(idx >= 0 && idx < options.length)) {
+                await submission.reply({
+                  content: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.`,
+                  ephemeral: true,
+                });
+                return;
+              }
+              const correctIdx = resolveCorrectIndex(question);
+              const correctLetter = letterFromIndex(correctIdx);
+              const correctText = options[correctIdx];
+              const userText = options[idx];
+
+              const correct = idx === correctIdx;
+              await submission.reply({
+                ephemeral: true,
+                content:
+                  (correct ? '✅ **Correct!**' : '❌ **Incorrect.**') +
+                  `\n**Your answer:** ${letter}) ${userText}\n**Correct answer:** ${correctLetter}) ${correctText}`,
+              });
+            } else {
+              // FRQ grading
+              try {
+                console.log('[circuitlab] Starting FRQ grading for:', {
+                  questionText: question.question?.substring(0, 100) + '...',
+                  userAnswer: userAnswer.substring(0, 100) + '...',
+                  correctAnswers: question.answers
+                });
+                
+                const correctAnswers =
+                  Array.isArray(question.answers)
+                    ? question.answers.map(a => String(a))
+                    : (typeof question.answers === 'string' ? [question.answers] : []);
+                
+                console.log('[circuitlab] Prepared grading request:', {
+                  questionLength: question.question?.length,
+                  userAnswerLength: userAnswer.length,
+                  correctAnswersCount: correctAnswers.length,
+                  correctAnswers: correctAnswers
+                });
+                
+                // Use the exact format from the API documentation
+                const requestBody = {
+                  responses: [{ 
+                    question: question.question, 
+                    correctAnswers, 
+                    studentAnswer: userAnswer
+                  }]
+                };
+                console.log('[circuitlab] Request body:', JSON.stringify(requestBody, null, 2));
+                
+                // Try the primary API first
+                let gradeRes;
+                try {
+                  console.log('[circuitlab] Trying primary grading API...');
+                  gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
+                  console.log('[circuitlab] Primary grading API success, response structure:', Object.keys(gradeRes.data));
+                } catch (primaryErr) {
+                  console.log('[circuitlab] Primary grading API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
+                  
+                  // Try fallback API with same format
+                  try {
+                    console.log('[circuitlab] Trying fallback API...');
+                    gradeRes = await axios.post(`${FALLBACK_BASE}/api/gemini/grade-free-responses`, {
+                      responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }]
+                    }, { headers: AUTH_HEADERS });
+                    console.log('[circuitlab] Fallback grading API success, response structure:', Object.keys(gradeRes.data));
+                  } catch (fallbackErr) {
+                    console.log('[circuitlab] Fallback grading API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
+                    throw fallbackErr; // Re-throw to be caught by outer catch
+                  }
+                }
+
+                console.log('[circuitlab] Grading API response received:', {
+                  hasData: !!gradeRes.data?.data,
+                  dataKeys: gradeRes.data?.data ? Object.keys(gradeRes.data.data) : 'none',
+                  fullResponse: JSON.stringify(gradeRes.data, null, 2)
+                });
+                
+                // Handle the grading API response format (currently returns scores, not grades)
+                const grade = gradeRes.data?.data?.grades?.[0];
+                let score = null;
+                let feedback = 'No detailed feedback available from the grading service.';
+                let keyPoints = [];
+                let suggestions = [];
+                
+                if (grade) {
+                  // If we get the full grade object with feedback
+                  score = grade.score;
+                  feedback = grade.feedback || 'No feedback provided.';
+                  keyPoints = grade.keyPoints || [];
+                  suggestions = grade.suggestions || [];
+                } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
+                  // Current API format: just scores
+                  score = gradeRes.data.data.scores[0];
+                  feedback = 'Score received but detailed feedback is not currently available from the grading service.';
+                  
+                  // Try to provide some basic feedback based on the score
+                  if (score >= 0.8) {
+                    feedback = 'Excellent answer! You covered the key points well.';
+                  } else if (score >= 0.6) {
+                    feedback = 'Good answer! You covered most of the key points.';
+                  } else if (score >= 0.4) {
+                    feedback = 'Fair answer. You covered some key points but could improve.';
+                  } else {
+                    feedback = 'The answer could be improved. Review the key concepts and try again.';
+                  }
+                } else {
+                  console.log('[circuitlab] No score or grade found in response, showing error to user');
+                  console.log('[circuitlab] Available data keys:', Object.keys(gradeRes.data?.data || {}));
+                  await submission.reply({
+                    ephemeral: true,
+                    content: 'Grading service did not return a result. Please try again shortly.',
+                  });
+                  return;
+                }
+                
+                const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
+                const correctAnswersDisplay = correctAnswers.length ? correctAnswers.join('; ') : '—';
+                
+                // Build the detailed feedback response
+                let feedbackContent = `🧠 **Grading Result**` +
+                  (scorePct !== null ? ` — **${scorePct}%**` : '') +
+                  `\n**Your answer:** ${userAnswer}\n**Expected key points / answers:** ${correctAnswersDisplay}\n\n**Feedback:** ${feedback}`;
+                
+                // Add key points if available
+                if (keyPoints.length > 0) {
+                  feedbackContent += `\n\n**Key Points Covered:**\n${keyPoints.map(point => `• ${point}`).join('\n')}`;
+                }
+                
+                // Add suggestions if available
+                if (suggestions.length > 0) {
+                  feedbackContent += `\n\n**Suggestions for Improvement:**\n${suggestions.map(suggestion => `• ${suggestion}`).join('\n')}`;
+                }
+                
+                await submission.reply({
+                  ephemeral: true,
+                  content: feedbackContent,
+                });
+              } catch (err) {
+                console.error('[circuitlab] FRQ grading error details:', {
+                  status: err?.response?.status,
+                  statusText: err?.response?.statusText,
+                  message: err?.message,
+                  data: err?.response?.data,
+                  fullError: err
+                });
+                if (err?.response?.status === 429) {
+                  await submission.reply({ ephemeral: true, content: '⏳ The grading service is rate-limited right now. Please try again in a moment.' });
+                } else if (err?.response?.status === 401 || err?.response?.status === 403) {
+                  await submission.reply({ ephemeral: true, content: '🔒 Authentication failed for grading. Check your API key.' });
+                } else if (err?.response?.status) {
+                  await submission.reply({ ephemeral: true, content: `Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+                } else {
+                  await submission.reply({ ephemeral: true, content: `Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+                }
+              }
+            }
+          } else if (btn.customId === `explain_${question.id || interaction.id}`) {
+            await btn.deferReply({ ephemeral: true });
+            try {
+              // Try the primary API first
+              let explainRes;
+              try {
+                console.log('[circuitlab] Trying primary explanation API...');
+                explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, {
+                  question: question.question,
+                  event: 'Circuit Lab',
+                  streaming: false
+                }, { headers: AUTH_HEADERS });
+                console.log('[circuitlab] Primary explanation API success');
+              } catch (primaryErr) {
+                console.log('[circuitlab] Primary explanation API failed, trying fallback:', primaryErr?.response?.status, primaryErr?.response?.data);
+                // Try fallback API
+                try {
+                  console.log('[circuitlab] Trying fallback explanation API...');
+                  explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
+                    question: question.question,
+                    event: 'Circuit Lab',
+                    streaming: false
+                  }, { headers: AUTH_HEADERS });
+                  console.log('[circuitlab] Fallback explanation API success');
+                } catch (fallbackErr) {
+                  console.log('[circuitlab] Fallback explanation API also failed:', fallbackErr?.response?.status, fallbackErr?.response?.data);
+                  throw fallbackErr; // Re-throw to be caught by outer catch
+                }
+              }
+
+              // Handle different response formats from the explanation API
+              let explanation = 'No explanation was returned.';
+              if (explainRes.data?.data) {
+                if (typeof explainRes.data.data === 'string') {
+                  explanation = explainRes.data.data;
+                } else if (explainRes.data.data.explanation) {
+                  explanation = explainRes.data.data.explanation;
+                } else if (explainRes.data.data.text) {
+                  explanation = explainRes.data.data.text;
+                } else {
+                  // Log the actual structure for debugging
+                  console.log('[circuitlab] Explanation API response structure:', JSON.stringify(explainRes.data.data, null, 2));
+                  explanation = 'Explanation received but format is unexpected.';
+                }
+              }
+              
+              // Truncate explanation to fit Discord's 2000 character limit
+              const maxLength = 1900; // Leave some room for formatting
+              if (explanation.length > maxLength) {
+                explanation = explanation.substring(0, maxLength) + '...\n\n*[Explanation truncated due to length limit]*';
+              }
+              
+              await btn.editReply({ content: `📘 **Explanation**\n${explanation}` });
+            } catch (err) {
+              console.error('[circuitlab] Explanation error details:', {
+                status: err?.response?.status,
+                statusText: err?.response?.statusText,
+                message: err?.message,
+                data: err?.response?.data,
+                fullError: err
+              });
+              
+              if (err?.response?.status === 429) {
+                await btn.editReply({ content: '⏳ The explanation service is rate-limited right now. Please try again in a moment.' });
+              } else if (err?.response?.status === 401 || err?.response?.status === 403) {
+                await btn.editReply({ content: '🔒 Authentication failed for explanation. Check your API key.' });
+              } else if (err?.response?.status) {
+                await btn.editReply({ content: `Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.` });
+              } else {
+                await btn.editReply({ content: `Could not fetch an explanation: ${err?.message || 'Network or connection error'}. Please try again shortly.` });
+              }
+            }
+          }
+        } catch (innerErr) {
+          console.error('[circuitlab] Button handler error:', innerErr);
+          try {
+            if (!btn.replied && !btn.deferred) {
+              await btn.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
+            }
+          } catch {}
+        }
+      });
+
+      collector.on('end', () => { /* buttons stop being handled after 30m; visuals remain */ });
 
     } catch (err) {
       console.error('Error in Circuit Lab command:', err);
