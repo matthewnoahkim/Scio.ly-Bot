@@ -124,7 +124,7 @@ module.exports = {
                 const expected = correctAnswers.length? (correctAnswers.join('; ').slice(0,1000)+(correctAnswers.join('; ').length>1000?'…':'')) : '—';
                 const res=new EmbedBuilder().setColor(isCorrect?COLOR_GREEN:COLOR_RED).setTitle(isCorrect?'✅ Correct!':'❌ Wrong.').addFields(
                   {name:'Your answer', value:userAnswer.slice(0,1024)||'—', inline:false},
-                  {name:'Expected key points / answers', value:expected||'—', inline:false},
+                  {name:'Expected answer', value:expected||'—', inline:false},
                 );
                 await sub.reply({embeds:[res]});
               }catch(err){
