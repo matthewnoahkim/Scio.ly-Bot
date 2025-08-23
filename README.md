@@ -10,5 +10,5 @@ The covered events and subtopics have green cells.
 # Updates
 - **8/1/2025** Hylas, the Cat created
 - **8/8/2025** Version 1.0 released (Key features: commands to fetch questions for 18 events, `/check`, and `/explain`)
-- _Projected_ **8/30/2025** Version 1.1 released (Key features: `/edit`, `/delete`, and `/codebusters`)
+- **8/22/2025** Version 1.1 released (Key features: embeded messages with modal buttons, images for identification events, reliable frq question grading)
 - _Projected_ **9/30/2025** Version 1.2 released (Key features: `/bookmark`, `/profile`, and `/leaderboard`)
