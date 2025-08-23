@@ -98,6 +98,13 @@ function buildQuestionEmbed(question) {
 
   embed.addFields(fields);
   embed.setFooter({ text: 'Use the buttons below.' });
+
+  if (question.imageData) {
+    embed.setImage(question.imageData);
+  } else if (Array.isArray(question.images) && question.images.length > 0) {
+    embed.setImage(question.images[0]);
+  }
+
   return embed;
 }
 
@@ -194,7 +201,6 @@ module.exports = {
         }
       }
 
-      // Validate question data
       if (!question.question) {
         await interaction.editReply('Question data is incomplete. Please try again.');
         return;
@@ -311,7 +317,7 @@ module.exports = {
                   .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong')
                   .addFields(
                     { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
-                    { name: 'Expected key points', value: correctAnswersDisplay || '—', inline: false },
+                    { name: 'Expected answer', value: correctAnswersDisplay || '—', inline: false },
                   );
 
                 await submission.reply({ embeds: [resultEmbed] });
@@ -329,7 +335,7 @@ module.exports = {
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply();
+            await btn.deferReply(); // public
             try {
               const explanation = await getExplanationWithRetry(question, 'Anatomy - Nervous', AUTH_HEADERS, 'anatomynervous');
               const finalExplanation = explanation || 'No explanation available.';
