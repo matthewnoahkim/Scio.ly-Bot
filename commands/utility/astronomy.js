@@ -1,19 +1,23 @@
 // /commands/astronomy.js
-const { 
-  SlashCommandBuilder, 
-  EmbedBuilder, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  ModalBuilder, 
-  TextInputBuilder, 
-  TextInputStyle, 
-  ComponentType 
+const {
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ComponentType
 } = require('discord.js');
 const axios = require('axios');
-const { letterFromIndex, buildFullQuestionText, extractExplanation, getExplanationWithRetry } = require('../../shared-utils');
+const { EVENT_RULES } = require('../../event-rules'); // <-- new shared rules
+const { letterFromIndex, getExplanationWithRetry } = require('../../shared-utils');
 
 // ====== Config ======
+const EVENT_NAME = 'Astronomy';
+const RULES = EVENT_RULES[EVENT_NAME] || { divisions: [], allowedSubtopics: [], allowImages: false };
+
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
 if (!API_KEY) {
@@ -27,25 +31,6 @@ const AUTH_HEADERS = API_KEY
 const COLOR_BLUE = 0x2b90d9;
 const COLOR_GREEN = 0x3fbf7f;
 const COLOR_RED = 0xff5555;
-
-const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division C"];
-const difficultyOptions = [
-  "Very Easy (0-19%)",
-  "Easy (20-39%)", 
-  "Medium (40-59%)",
-  "Hard (60-79%)",
-  "Very Hard (80-100%)"
-];
-const subtopicOptions = ["Solar System", "Stars", "Galaxies", "Cosmology", "Instruments"];
-
-const difficultyMap = {
-  "Very Easy (0-19%)": { min: 0.0, max: 0.19 },
-  "Easy (20-39%)": { min: 0.2, max: 0.39 },
-  "Medium (40-59%)": { min: 0.4, max: 0.59 },
-  "Hard (60-79%)": { min: 0.6, max: 0.79 },
-  "Very Hard (80-100%)": { min: 0.8, max: 1.0 }
-};
 
 // ===== Helpers =====
 function normalize(text) {
@@ -71,7 +56,7 @@ function resolveCorrectIndex(question) {
 function buildQuestionEmbed(question) {
   const embed = new EmbedBuilder()
     .setColor(COLOR_BLUE)
-    .setTitle('Astronomy')
+    .setTitle(EVENT_NAME)
     .setDescription(question.question || 'No question text');
 
   const fields = [];
@@ -98,6 +83,16 @@ function buildQuestionEmbed(question) {
 
   embed.addFields(fields);
   embed.setFooter({ text: 'Use the buttons below.' });
+
+  // Show one image in the embed if allowed for this event
+  if (RULES.allowImages) {
+    if (question.imageData) {
+      embed.setImage(question.imageData);
+    } else if (Array.isArray(question.images) && question.images.length > 0) {
+      embed.setImage(question.images[0]);
+    }
+  }
+
   return embed;
 }
 
@@ -120,40 +115,105 @@ function prune(obj) {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null));
 }
 
+function choiceNameForDivision(v) {
+  return v === 'B' ? 'Division B' : v === 'C' ? 'Division C' : v;
+}
+
 module.exports = {
-  data: new SlashCommandBuilder()
-    .setName('astronomy')
-    .setDescription('Get a Astronomy question')
-    .addStringOption(option =>
-      option.setName('question_type')
+  data: (() => {
+    const builder = new SlashCommandBuilder()
+      .setName('astronomy')
+      .setDescription(`Get a ${EVENT_NAME} question`);
+
+    // Division choices from RULES.divisions
+    if (Array.isArray(RULES.divisions) && RULES.divisions.length) {
+      const divChoices = RULES.divisions.map((d) => ({ name: choiceNameForDivision(d), value: d }));
+      builder.addStringOption((option) =>
+        option
+          .setName('division')
+          .setDescription('Division (leave blank for random)')
+          .setRequired(false)
+          .addChoices(...divChoices),
+      );
+    }
+
+    // Subtopic choices from RULES.allowedSubtopics
+    if (Array.isArray(RULES.allowedSubtopics) && RULES.allowedSubtopics.length) {
+      const subChoices = RULES.allowedSubtopics.map((s) => ({ name: s, value: s }));
+      builder.addStringOption((option) =>
+        option
+          .setName('subtopic')
+          .setDescription('Subtopic (leave blank for random)')
+          .setRequired(false)
+          .addChoices(...subChoices),
+      );
+    }
+
+    // Question type (if you still want MCQ/FRQ filter)
+    builder.addStringOption((option) =>
+      option
+        .setName('question_type')
         .setDescription('Question type (leave blank for random)')
         .setRequired(false)
-        .addChoices(...questionTypeOptions.map(q => ({ name: q, value: q.toLowerCase() }))))
-    .addStringOption(option =>
-      option.setName('division')
-        .setDescription('Division (leave blank for random)')
-        .setRequired(false)
-        .addChoices(...divisionOptions.map(d => ({ name: d, value: d.split(' ')[1] }))))
-    .addStringOption(option =>
-      option.setName('difficulty')
+        .addChoices({ name: 'MCQ', value: 'mcq' }, { name: 'FRQ', value: 'frq' }),
+    );
+
+    // Difficulty range label (unchanged)
+    builder.addStringOption((option) =>
+      option
+        .setName('difficulty')
         .setDescription('Difficulty (leave blank for random)')
         .setRequired(false)
-        .addChoices(...difficultyOptions.map(d => ({ name: d, value: d }))))
-    .addStringOption(option =>
-      option.setName('subtopic')
-        .setDescription('Subtopic (leave blank for random)')
-        .setRequired(false)
-        .addChoices(...subtopicOptions.map(s => ({ name: s, value: s })))),
+        .addChoices(
+          { name: 'Very Easy (0-19%)', value: 'Very Easy (0-19%)' },
+          { name: 'Easy (20-39%)', value: 'Easy (20-39%)' },
+          { name: 'Medium (40-59%)', value: 'Medium (40-59%)' },
+          { name: 'Hard (60-79%)', value: 'Hard (60-79%)' },
+          { name: 'Very Hard (80-100%)', value: 'Very Hard (80-100%)' },
+        ),
+    );
+
+    return builder;
+  })(),
 
   async execute(interaction) {
     try {
       await interaction.deferReply();
 
-      const questionType = interaction.options.getString('question_type'); 
-      const division = interaction.options.getString('division');         
+      // Pull options
+      const questionType = interaction.options.getString('question_type');
+      let division = interaction.options.getString('division');
+      let subtopic = interaction.options.getString('subtopic');
       const difficultyLabel = interaction.options.getString('difficulty');
-      const subtopic = interaction.options.getString('subtopic');
 
+      // Validate division/subtopic against RULES
+      if (division && !RULES.divisions.includes(division)) {
+        await interaction.editReply(`This command does not support Division ${division} for **${EVENT_NAME}**.`);
+        return;
+      }
+      if (subtopic && !RULES.allowedSubtopics.includes(subtopic)) {
+        await interaction.editReply(`Subtopic **${subtopic}** is not available for **${EVENT_NAME}**.`);
+        return;
+      }
+
+      // Defaults if user left blank
+      if (!division && RULES.divisions.length) {
+        division = RULES.divisions[Math.floor(Math.random() * RULES.divisions.length)];
+      }
+      if (!subtopic && RULES.allowedSubtopics.length) {
+        // Let API choose randomly by not passing subtopic — or pick one to bias.
+        // We’ll bias to allowed set by picking one at random:
+        subtopic = RULES.allowedSubtopics[Math.floor(Math.random() * RULES.allowedSubtopics.length)];
+      }
+
+      // Difficulty map (same as before)
+      const difficultyMap = {
+        'Very Easy (0-19%)': { min: 0.0, max: 0.19 },
+        'Easy (20-39%)': { min: 0.2, max: 0.39 },
+        'Medium (40-59%)': { min: 0.4, max: 0.59 },
+        'Hard (60-79%)': { min: 0.6, max: 0.79 },
+        'Very Hard (80-100%)': { min: 0.8, max: 1.0 },
+      };
       let difficulty_min, difficulty_max;
       if (difficultyLabel && difficultyMap[difficultyLabel]) {
         difficulty_min = difficultyMap[difficultyLabel].min;
@@ -161,49 +221,90 @@ module.exports = {
       }
 
       const baseParams = prune({
-        event: 'Astronomy',
+        event: EVENT_NAME,
         division,
-        difficulty_min,
-        difficulty_max,
         subtopic,
         question_type: questionType,
-        limit: 1
+        difficulty_min,
+        difficulty_max,
+        limit: 1,
       });
 
-      const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params: baseParams, timeout: 15000 });
-      if (!listRes.data?.success) {
-        await interaction.editReply('API error. Please try again later.');
-        return;
-      }
-
-      const first = pickFirstQuestion(listRes.data.data);
-      if (!first) {
-        await interaction.editReply('No questions found matching your criteria. Try different filters.');
-        return;
-      }
-
-      let question = first;
-      if (!first.base52 && first.id) {
-        try {
-          const detailRes = await axios.get(`${PRIMARY_BASE}/api/questions/${first.id}`, { timeout: 15000 });
-          if (detailRes.data?.success && detailRes.data.data) {
-            question = detailRes.data.data;
-          }
-        } catch {
-          // ignore detail fetch fail; use first
+      // Fetch (retry a few times if the API returns a disallowed subtopic by chance)
+      let question = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, {
+          params: baseParams,
+          timeout: 15000,
+          headers: AUTH_HEADERS,
+        });
+        if (!listRes.data?.success) {
+          await interaction.editReply('API error. Please try again later.');
+          return;
         }
+        const first = pickFirstQuestion(listRes.data.data);
+        if (!first) {
+          await interaction.editReply('No questions found matching your criteria. Try different filters.');
+          return;
+        }
+        // Optionally expand by ID to get images array if needed
+        question = first;
+        if (!first.base52 && first.id) {
+          try {
+            const detailRes = await axios.get(`${PRIMARY_BASE}/api/questions/${first.id}`, {
+              timeout: 15000,
+              headers: AUTH_HEADERS,
+            });
+            if (detailRes.data?.success && detailRes.data.data) {
+              question = detailRes.data.data;
+            }
+          } catch {}
+        }
+
+        // Guard: make sure subtopic/division adhere to rules
+        const qDiv = question.division || division;
+        const qSubtopics = Array.isArray(question.subtopics) ? question.subtopics : [];
+        const subtopicOk =
+          !RULES.allowedSubtopics.length || qSubtopics.some((s) => RULES.allowedSubtopics.includes(s));
+        const divOk = !RULES.divisions.length || RULES.divisions.includes(qDiv);
+        if (subtopicOk && divOk) break; // good
+        question = null; // try again
       }
 
-      // Validate question data
-      if (!question.question) {
+      if (!question || !question.question) {
         await interaction.editReply('Question data is incomplete. Please try again.');
         return;
       }
-      
+
+      // Build embed + optional image attachments
       const embed = buildQuestionEmbed(question);
       const components = [buildButtonsRow(question.id || interaction.id)];
-      const sent = await interaction.editReply({ embeds: [embed], components });
 
+      // Attach multiple images as files (only if pictured row is green for this event)
+      const files = [];
+      if (RULES.allowImages) {
+        if (Array.isArray(question.images) && question.images.length > 1) {
+          // Already put images[0] in the embed; attach all images as files too
+          for (let i = 0; i < question.images.length; i++) {
+            const url = question.images[i];
+            if (typeof url === 'string' && url.startsWith('http')) {
+              const nameGuess = url.split('/').pop()?.split('?')[0] || `image_${i + 1}.jpg`;
+              files.push({ attachment: url, name: nameGuess });
+            }
+          }
+        } else if (question.imageData) {
+          // Optional: also attach the single imageData as a file (not required)
+          const url = question.imageData;
+          const nameGuess = url.split('/').pop()?.split('?')[0] || 'image.jpg';
+          files.push({ attachment: url, name: nameGuess });
+        }
+      }
+
+      const sent = await interaction.editReply(
+        files.length ? { embeds: [embed], components, files } : { embeds: [embed], components },
+      );
+
+      // Collector for buttons
       const collector = sent.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: 30 * 60 * 1000,
@@ -257,36 +358,42 @@ module.exports = {
                 return;
               }
               const correctIdx = resolveCorrectIndex(question);
-              const correctLetter = letterFromIndex(correctIdx);
-              const correctText = options[correctIdx];
-              const userText = options[idx];
               const correct = idx === correctIdx;
 
               const resultEmbed = new EmbedBuilder()
                 .setColor(correct ? COLOR_GREEN : COLOR_RED)
-                .setTitle(correct ? '✅ Correct!' : '❌ Wrong')
+                .setTitle(correct ? '✅ Correct!' : '❌ Wrong.')
                 .addFields(
-                  { name: 'Your answer', value: `**${letter})** ${userText}`, inline: true },
-                  { name: 'Correct answer', value: `**${correctLetter})** ${correctText}`, inline: true },
+                  { name: 'Your answer', value: `**${letterFromIndex(idx)})** ${options[idx]}`, inline: true },
+                  { name: 'Correct answer', value: `**${letterFromIndex(correctIdx)})** ${options[correctIdx]}`, inline: true },
                 );
 
               await submission.reply({ embeds: [resultEmbed] });
             } else {
+              // FRQ grading — no score/feedback shown; threshold > 50%
               try {
                 const correctAnswers =
                   Array.isArray(question.answers)
-                    ? question.answers.map(a => String(a))
-                    : (typeof question.answers === 'string' ? [question.answers] : []);
-                
+                    ? question.answers.map((a) => String(a))
+                    : typeof question.answers === 'string'
+                      ? [question.answers]
+                      : [];
+
                 const requestBody = {
-                  responses: [{ 
-                    question: question.question, 
-                    correctAnswers, 
-                    studentAnswer: userAnswer
-                  }]
+                  responses: [
+                    {
+                      question: question.question,
+                      correctAnswers,
+                      studentAnswer: userAnswer,
+                    },
+                  ],
                 };
 
-                const gradeRes = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, { headers: AUTH_HEADERS });
+                const gradeRes = await axios.post(
+                  `${PRIMARY_BASE}/api/gemini/grade-free-responses`,
+                  requestBody,
+                  { headers: AUTH_HEADERS },
+                );
 
                 const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
@@ -299,16 +406,15 @@ module.exports = {
                   return;
                 }
 
-                const scorePct = typeof score === 'number' ? Math.round(score * 100) : 0;
-                const isCorrectByThreshold = scorePct > 50;
-
-                const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
-                  ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
-                  : '—';
+                const isCorrect = Math.round(score * 100) > 50;
+                const correctAnswersDisplay =
+                  correctAnswers && correctAnswers.length
+                    ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+                    : '—';
 
                 const resultEmbed = new EmbedBuilder()
-                  .setColor(isCorrectByThreshold ? COLOR_GREEN : COLOR_RED)
-                  .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong')
+                  .setColor(isCorrect ? COLOR_GREEN : COLOR_RED)
+                  .setTitle(isCorrect ? '✅ Correct!' : '❌ Wrong.')
                   .addFields(
                     { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
                     { name: 'Expected answer', value: correctAnswersDisplay || '—', inline: false },
@@ -329,14 +435,12 @@ module.exports = {
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply();
+            await btn.deferReply(); // public
             try {
-              const explanation = await getExplanationWithRetry(question, 'Astronomy', AUTH_HEADERS, 'astronomy');
+              const explanation = await getExplanationWithRetry(question, EVENT_NAME, AUTH_HEADERS, 'astronomy');
               const finalExplanation = explanation || 'No explanation available.';
 
-              const explainEmbed = new EmbedBuilder()
-                .setColor(COLOR_BLUE)
-                .setTitle('Explanation');
+              const explainEmbed = new EmbedBuilder().setColor(COLOR_BLUE).setTitle('Explanation');
 
               if (finalExplanation.length <= 4096) {
                 explainEmbed.setDescription(finalExplanation);
@@ -369,8 +473,7 @@ module.exports = {
         }
       });
 
-      collector.on('end', () => { /* buttons stop after 30m; visuals remain */ });
-
+      collector.on('end', () => { /* stop after 30m; visuals remain */ });
     } catch (err) {
       console.error('Error in Astronomy command:', err);
       if (err.response?.status === 429) {
