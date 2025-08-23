@@ -1,4 +1,4 @@
-// /commands/anatomynervous.js
+// /commands/remotesensing.js
 const { 
   SlashCommandBuilder, 
   EmbedBuilder, 
@@ -17,19 +17,19 @@ const { letterFromIndex, buildFullQuestionText, extractExplanation, getExplanati
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
 if (!API_KEY) {
-  console.warn('[anatomynervous] No SCIO_API_KEY found in environment variables. API calls may fail.');
+  console.warn('[remotesensing] No SCIO_API_KEY found in environment variables. API calls may fail.');
 }
 const AUTH_HEADERS = API_KEY
   ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` }
   : {};
 
 // Colors
-const COLOR_BLUE = 0x2b90d9;
-const COLOR_GREEN = 0x3fbf7f;
-const COLOR_RED = 0xff5555;
+const COLOR_BLUE = '#0000FF';
+const COLOR_GREEN = '#008000';
+const COLOR_RED = '#FF0000';
 
 const questionTypeOptions = ["MCQ", "FRQ"];
-const divisionOptions = ["Division C"];
+const divisionOptions = ["Division B", "Division C"];
 const difficultyOptions = [
   "Very Easy (0-19%)",
   "Easy (20-39%)", 
@@ -37,7 +37,7 @@ const difficultyOptions = [
   "Hard (60-79%)",
   "Very Hard (80-100%)"
 ];
-const subtopicOptions = ["Brain", "Spinal Cord", "Nerves", "Reflexes", "Neurotransmitters"];
+const subtopicOptions = ["Satellites", "Imagining", "Data Analysis", "Applications", "Technology"];
 
 const difficultyMap = {
   "Very Easy (0-19%)": { min: 0.0, max: 0.19 },
@@ -64,14 +64,14 @@ function resolveCorrectIndex(question) {
     const idx = options.findIndex((opt) => normalize(opt) === target);
     if (idx !== -1) return idx;
   }
-  console.warn('[anatomynervous] Could not resolve correct index from answers:', answers);
+  console.warn('[remotesensing] Could not resolve correct index from answers:', answers);
   return 0;
 }
 
 function buildQuestionEmbed(question) {
   const embed = new EmbedBuilder()
     .setColor(COLOR_BLUE)
-    .setTitle('Anatomy - Nervous')
+    .setTitle('Remote Sensing')
     .setDescription(question.question || 'No question text');
 
   const fields = [];
@@ -122,8 +122,8 @@ function prune(obj) {
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('anatomynervous')
-    .setDescription('Get a Anatomy - Nervous question')
+    .setName('remotesensing')
+    .setDescription('Get a Remote Sensing question')
     .addStringOption(option =>
       option.setName('question_type')
         .setDescription('Question type (leave blank for random)')
@@ -161,7 +161,7 @@ module.exports = {
       }
 
       const baseParams = prune({
-        event: 'Anatomy - Nervous',
+        event: 'Remote Sensing',
         division,
         difficulty_min,
         difficulty_max,
@@ -213,6 +213,7 @@ module.exports = {
       collector.on('collect', async (btn) => {
         try {
           if (btn.user.id !== interaction.user.id) {
+            // keep ephemeral to avoid channel spam
             await btn.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
             return;
           }
@@ -224,10 +225,10 @@ module.exports = {
             const modal = new ModalBuilder().setCustomId(modalId).setTitle('Check your answer');
             const input = new TextInputBuilder()
               .setCustomId('answer_input')
-              .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
+              .setLabel(isMCQ ? 'Your answer' : 'Your answer')
               .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
               .setRequired(true)
-              .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here');
+              .setPlaceholder(isMCQ ? 'e.g., A' : 'Include all necessary details.');
             modal.addComponents(new ActionRowBuilder().addComponents(input));
             await btn.showModal(modal);
 
@@ -264,7 +265,7 @@ module.exports = {
 
               const resultEmbed = new EmbedBuilder()
                 .setColor(correct ? COLOR_GREEN : COLOR_RED)
-                .setTitle(correct ? '✅ Correct!' : '❌ Wrong')
+                .setTitle(correct ? '✅ Correct!' : '❌ Wrong.')
                 .addFields(
                   { name: 'Your answer', value: `**${letter})** ${userText}`, inline: true },
                   { name: 'Correct answer', value: `**${correctLetter})** ${correctText}`, inline: true },
@@ -272,6 +273,7 @@ module.exports = {
 
               await submission.reply({ embeds: [resultEmbed] });
             } else {
+              // FRQ grading
               try {
                 const correctAnswers =
                   Array.isArray(question.answers)
@@ -290,18 +292,28 @@ module.exports = {
 
                 const grade = gradeRes.data?.data?.grades?.[0];
                 let score = null;
-                if (grade && typeof grade.score === 'number') {
+                let feedback = 'No detailed feedback available from the grading service.';
+                let keyPoints = [];
+                let suggestions = [];
+                
+                if (grade) {
                   score = grade.score;
+                  feedback = grade.feedback || 'No feedback provided.';
+                  keyPoints = Array.isArray(grade.keyPoints) ? grade.keyPoints : [];
+                  suggestions = Array.isArray(grade.suggestions) ? grade.suggestions : [];
                 } else if (gradeRes.data?.data?.scores?.[0] !== undefined) {
                   score = gradeRes.data.data.scores[0];
+                  if (score >= 0.8) feedback = 'Excellent answer! You covered the key points well.';
+                  else if (score >= 0.6) feedback = 'Good answer! You covered most of the key points.';
+                  else if (score >= 0.4) feedback = 'Fair answer. You covered some key points but could improve.';
+                  else feedback = 'The answer could be improved. Review the key concepts and try again.';
                 } else {
                   await submission.reply('Grading service did not return a result. Please try again shortly.');
                   return;
                 }
-
-                const scorePct = typeof score === 'number' ? Math.round(score * 100) : 0;
-                const isCorrectByThreshold = scorePct > 50;
-
+                
+                const scorePct = typeof score === 'number' ? Math.round(score * 100) : null;
+                const isCorrectByThreshold = (scorePct ?? 0) > 40;
                 const correctAnswersDisplay = (correctAnswers && correctAnswers.length)
                   ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
                   : '—';
@@ -310,13 +322,24 @@ module.exports = {
                   .setColor(isCorrectByThreshold ? COLOR_GREEN : COLOR_RED)
                   .setTitle(isCorrectByThreshold ? '✅ Correct!' : '❌ Wrong')
                   .addFields(
+                    ...(scorePct !== null ? [{ name: 'Score', value: `${scorePct}%`, inline: true }] : []),
                     { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
-                    { name: 'Expected key points', value: correctAnswersDisplay || '—', inline: false },
+                    { name: 'Expected key points / answers', value: correctAnswersDisplay || '—', inline: false },
+                    { name: 'Feedback', value: feedback.slice(0, 1024) || '—', inline: false },
                   );
 
+                if (keyPoints.length > 0) {
+                  const kp = keyPoints.map(p => `• ${p}`).join('\n').slice(0, 1024);
+                  if (kp) resultEmbed.addFields({ name: 'Key Points Covered', value: kp, inline: false });
+                }
+                if (suggestions.length > 0) {
+                  const sg = suggestions.map(s => `• ${s}`).join('\n').slice(0, 1024);
+                  if (sg) resultEmbed.addFields({ name: 'Suggestions', value: sg, inline: false });
+                }
+                
                 await submission.reply({ embeds: [resultEmbed] });
               } catch (err) {
-                console.error('[anatomynervous] FRQ grading error:', err?.response?.status, err?.message);
+                console.error('[remotesensing] FRQ grading error:', err?.response?.status, err?.message);
                 if (err?.response?.status === 429) {
                   await submission.reply('The grading service is rate-limited right now. Please try again in a moment.');
                 } else if (err?.response?.status === 401 || err?.response?.status === 403) {
@@ -329,9 +352,9 @@ module.exports = {
               }
             }
           } else if (btn.customId === `explain_${question.id || interaction.id}`) {
-            await btn.deferReply();
+            await btn.deferReply(); // public
             try {
-              const explanation = await getExplanationWithRetry(question, 'Anatomy - Nervous', AUTH_HEADERS, 'anatomynervous');
+              const explanation = await getExplanationWithRetry(question, 'Remote Sensing', AUTH_HEADERS, 'remotesensing');
               const finalExplanation = explanation || 'No explanation available.';
 
               const explainEmbed = new EmbedBuilder()
@@ -347,7 +370,7 @@ module.exports = {
                 await btn.editReply({ embeds: [explainEmbed], files: [{ attachment: buffer, name: 'explanation.txt' }] });
               }
             } catch (err) {
-              console.error('[anatomynervous] Explanation error:', err?.response?.status, err?.message);
+              console.error('[remotesensing] Explanation error:', err?.response?.status, err?.message);
               if (err?.response?.status === 429) {
                 await btn.editReply('The explanation service is rate-limited right now. Please try again in a moment.');
               } else if (err?.response?.status === 401 || err?.response?.status === 403) {
@@ -360,7 +383,7 @@ module.exports = {
             }
           }
         } catch (innerErr) {
-          console.error('[anatomynervous] Button handler error:', innerErr);
+          console.error('[remotesensing] Button handler error:', innerErr);
           try {
             if (!btn.replied && !btn.deferred) {
               await btn.reply('Something went wrong handling that action.');
@@ -372,7 +395,7 @@ module.exports = {
       collector.on('end', () => { /* buttons stop after 30m; visuals remain */ });
 
     } catch (err) {
-      console.error('Error in Anatomy - Nervous command:', err);
+      console.error('Error in Remote Sensing command:', err);
       if (err.response?.status === 429) {
         await interaction.editReply('Rate limit exceeded. Please try again in a few moments.');
       } else {
