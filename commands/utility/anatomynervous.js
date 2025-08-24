@@ -87,15 +87,7 @@ function buttonsRow(id){
     new ButtonBuilder().setCustomId(`explain_${id}`).setLabel('Explain question').setStyle(ButtonStyle.Secondary),
   );
 }
-
-module.exports = {
-  data: (() => {
-    const builder = new SlashCommandBuilder()
-      .setName(COMMAND_NAME)
-      .setDescription(`Get a ${EVENT_NAME} question`);
-
-    // Question type choices; include ID only if images are allowed
-    const qtypeChoices = ALLOW_IMAGES
+const qtypeChoices = ALLOW_IMAGES
       ? [
           { name:'MCQ', value:'mcq' },
           { name:'FRQ', value:'frq' },
@@ -105,6 +97,12 @@ module.exports = {
           { name:'MCQ', value:'mcq' },
           { name:'FRQ', value:'frq' },
         ];
+        
+module.exports = {
+  data: (() => {
+    const builder = new SlashCommandBuilder()
+      .setName(COMMAND_NAME)
+      .setDescription(`Get a ${EVENT_NAME} question`);
 
     builder.addStringOption(o =>
       o.setName('question_type')
