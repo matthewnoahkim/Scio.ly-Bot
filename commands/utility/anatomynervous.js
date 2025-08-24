@@ -76,8 +76,8 @@ function buildQuestionEmbed(q, isID){
 
   // Show one image in-embed ONLY for ID mode
   if (isID) {
-    if (q.imageData) e.setImage(q.imageData);
-    else if (Array.isArray(q.images) && q.images.length) e.setImage(q.images[0]);
+    if (Array.isArray(q.images) && q.images.length) e.setImage(q.images[0]);
+    else if (q.imageData) e.setImage(q.imageData);
   }
   return e;
 }
@@ -215,20 +215,21 @@ module.exports = {
       const components = [buttonsRow(question.id || interaction.id)];
       const files = [];
 
-      if (isID) {
-        if (Array.isArray(question.images) && question.images.length > 0) {
-          question.images.forEach((url, i) => {
-            if (typeof url === 'string' && url.startsWith('http')) {
-              const nameGuess = url.split('/').pop()?.split('?')[0] || `image_${i+1}.jpg`;
-              files.push({ attachment: url, name: nameGuess });
-            }
-          });
-        } else if (question.imageData) {
-          const url = question.imageData;
-          const nameGuess = url.split('/').pop()?.split('?')[0] || 'image.jpg';
-          files.push({ attachment: url, name: nameGuess });
-        }
-      }
+      // Images are now shown in the embed instead of as separate file attachments
+      // if (isID) {
+      //   if (Array.isArray(question.images) && question.images.length > 0) {
+      //     question.images.forEach((url, i) => {
+      //       if (typeof url === 'string' && url.startsWith('http')) {
+      //       const nameGuess = url.split('/').pop()?.split('?')[0] || `image_${i+1}.jpg`;
+      //       files.push({ attachment: url, name: nameGuess });
+      //     }
+      //   });
+      // } else if (question.imageData) {
+      //   const url = question.imageData;
+      //   const nameGuess = url.split('/').pop()?.split('?')[0] || 'image.jpg';
+      //   files.push({ attachment: url, name: nameGuess });
+      // }
+      // }
 
       const sent = await interaction.editReply(files.length
         ? { embeds:[embed], components, files }
