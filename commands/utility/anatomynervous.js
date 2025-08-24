@@ -1,3 +1,4 @@
+// /commands/anatomynervous.js
 const {
   SlashCommandBuilder,
   EmbedBuilder,
@@ -52,7 +53,7 @@ function pickFirst(data){
   if (data.id || data.base52 || data.question) return data;
   return null;
 }
-function buildQuestionEmbed(q, picturedChoice){
+function buildQuestionEmbed(q, idChoice){
   const e = new EmbedBuilder()
     .setColor(COLOR_BLUE)
     .setTitle(EVENT_NAME)
@@ -73,7 +74,7 @@ function buildQuestionEmbed(q, picturedChoice){
   );
   e.addFields(fields).setFooter({ text: 'Use the buttons below.' });
 
-  if (ALLOW_IMAGES && picturedChoice !== 'no_picture') {
+  if (ALLOW_IMAGES && idChoice !== 'no_id') {
     if (q.imageData) e.setImage(q.imageData);
     else if (Array.isArray(q.images) && q.images.length) e.setImage(q.images[0]);
   }
@@ -100,10 +101,10 @@ module.exports = {
 
     if (ALLOW_IMAGES) {
       builder.addStringOption(o =>
-        o.setName('ID')
+        o.setName('id')
          .setDescription('Identification question (leave blank for random)')
          .setRequired(false)
-         .addChoices({ name:'ID', value:'picture' }, { name:'No ID', value:'no_picture' })
+         .addChoices({ name:'ID', value:'id' }, { name:'No ID', value:'no_id' })
       );
     }
 
@@ -141,7 +142,7 @@ module.exports = {
       await interaction.deferReply();
 
       const question_type = interaction.options.getString('question_type');    // mcq | frq | null
-      const pictured = ALLOW_IMAGES ? interaction.options.getString('pictured') : null; // picture | no_picture | null
+      const idChoice = ALLOW_IMAGES ? interaction.options.getString('id') : null; // 'id' | 'no_id' | null
       let division = interaction.options.getString('division');
       let subtopic = interaction.options.getString('subtopic');
       const difficultyLabel = interaction.options.getString('difficulty');
@@ -163,7 +164,7 @@ module.exports = {
       // -------- Fetch question ----------
       let question = null;
 
-      if (ALLOW_IMAGES && pictured === 'picture') {
+      if (ALLOW_IMAGES && idChoice === 'id') {
         const params = prune({
           event: EVENT_NAME,
           division,
@@ -177,7 +178,7 @@ module.exports = {
         });
         if (!res.data?.success) { await interaction.editReply('API error. Please try again later.'); return; }
         question = pickFirst(res.data.data);
-        if (!question) { await interaction.editReply('No pictured questions found for your filters. Try different filters.'); return; }
+        if (!question) { await interaction.editReply('No identification questions found for your filters. Try different filters.'); return; }
       } else {
         const params = prune({
           event: EVENT_NAME,
@@ -194,6 +195,7 @@ module.exports = {
         if (!listRes.data?.success) { await interaction.editReply('API error. Please try again later.'); return; }
         const first = pickFirst(listRes.data.data);
         if (!first) { await interaction.editReply('No questions found matching your criteria. Try different filters.'); return; }
+        // NOTE: no detail fetch fallback
         question = first;
       }
 
@@ -203,12 +205,11 @@ module.exports = {
       }
 
       // -------- Send question embed (and also attach image files) ----------
-      const embed = buildQuestionEmbed(question, pictured);
+      const embed = buildQuestionEmbed(question, idChoice);
       const components = [buttonsRow(question.id || interaction.id)];
       const files = [];
 
-      // Attach all images as files IF images allowed AND user didn't choose "no picture"
-      if (ALLOW_IMAGES && pictured !== 'no_picture') {
+      if (ALLOW_IMAGES && idChoice !== 'no_id') {
         if (Array.isArray(question.images) && question.images.length > 0) {
           question.images.forEach((url, i) => {
             if (typeof url === 'string' && url.startsWith('http')) {
@@ -253,7 +254,7 @@ module.exports = {
                 .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
                 .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
                 .setRequired(true)
-                .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free answer here')
+                .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here')
             ));
             await btn.showModal(modal);
 
@@ -289,7 +290,6 @@ module.exports = {
               await sub.reply({ embeds:[res] });
 
             } else {
-              // FRQ — use score only to decide Correct/Wrong (>50%), but do not display score/feedback
               try {
                 const correctAnswers =
                   Array.isArray(question.answers) ? question.answers.map(String)
