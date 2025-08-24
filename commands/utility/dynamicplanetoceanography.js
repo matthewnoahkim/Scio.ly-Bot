@@ -121,7 +121,7 @@ module.exports = {
     try {
       const questionType = interaction.options.getString('question_type');
       const division = interaction.options.getString('division') || DIVISIONS[0];
-      const subtopic = interaction.options.getString('subtopic') || ALLOWED_SUBTOPICS[Math.floor(Math.random() * ALLOWED_SUBTOPICS.length)];
+      const subtopic = interaction.options.getString('subtopic') || (questionType !== 'ID' ? ALLOWED_SUBTOPICS[Math.floor(Math.random() * ALLOWED_SUBTOPICS.length)] : undefined);
       const difficulty = interaction.options.getString('difficulty');
 
       const difficultyMap = {
