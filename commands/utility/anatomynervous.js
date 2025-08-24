@@ -16,9 +16,9 @@ const { letterFromIndex, getExplanationWithRetry } = require('../../shared-utils
 // ========= Event-specific constants =========
 const COMMAND_NAME = 'anatomynervous';
 const EVENT_NAME = 'Anatomy - Nervous';
-const DIVISIONS = ['C'];
-const ALLOWED_SUBTOPICS = ['Brain','Spinal Cord','Nerves','Reflexes','Neurotransmitters'];
-const ALLOW_IMAGES = true;
+const DIVISIONS = ['C']; // allowed divisions
+const ALLOWED_SUBTOPICS = ['Brain','Spinal Cord','Nerves','Reflexes','Neurotransmitters']; // allowed subtopics
+const ALLOW_IMAGES = true; // enable ID (pictured) questions for this event
 // ===========================================
 
 const PRIMARY_BASE = 'https://scio.ly';
@@ -53,7 +53,7 @@ function pickFirst(data){
   if (data.id || data.base52 || data.question) return data;
   return null;
 }
-function buildQuestionEmbed(q, idChoice){
+function buildQuestionEmbed(q, isID){
   const e = new EmbedBuilder()
     .setColor(COLOR_BLUE)
     .setTitle(EVENT_NAME)
@@ -74,7 +74,8 @@ function buildQuestionEmbed(q, idChoice){
   );
   e.addFields(fields).setFooter({ text: 'Use the buttons below.' });
 
-  if (idChoice === 'id') {
+  // Show one image in-embed ONLY for ID mode
+  if (isID) {
     if (q.imageData) e.setImage(q.imageData);
     else if (Array.isArray(q.images) && q.images.length) e.setImage(q.images[0]);
   }
@@ -91,23 +92,25 @@ module.exports = {
   data: (() => {
     const builder = new SlashCommandBuilder()
       .setName(COMMAND_NAME)
-      .setDescription(`Get a ${EVENT_NAME} question`)
-      .addStringOption(o =>
-        o.setName('question_type')
-         .setDescription('Question type (leave blank for random)')
-         .setRequired(false)
-         .addChoices({ name:'MCQ', value:'mcq' }, { name:'FRQ', value:'frq' })
-      );
+      .setDescription(`Get a ${EVENT_NAME} question`);
 
-    const idChoices = ALLOW_IMAGES
-      ? [{ name:'ID', value:'id' }, { name:'No ID', value:'no_id' }]
-      : [{ name:'No ID', value:'no_id' }];
+    // Question type choices; include ID only if images are allowed
+    const qtypeChoices = ALLOW_IMAGES
+      ? [
+          { name:'MCQ', value:'mcq' },
+          { name:'FRQ', value:'frq' },
+          { name:'ID',  value:'id'  },
+        ]
+      : [
+          { name:'MCQ', value:'mcq' },
+          { name:'FRQ', value:'frq' },
+        ];
 
     builder.addStringOption(o =>
-      o.setName('id')
-       .setDescription('Identification question (leave blank for random)')
+      o.setName('question_type')
+       .setDescription('Question type (leave blank for random)')
        .setRequired(false)
-       .addChoices(...idChoices)
+       .addChoices(...qtypeChoices)
     );
 
     builder.addStringOption(o =>
@@ -143,14 +146,14 @@ module.exports = {
     try {
       await interaction.deferReply();
 
-      const question_type = interaction.options.getString('question_type');    // mcq | frq | null
-      // Default to 'no_id' (non-image) if user left it blank
-      const idChoice = (interaction.options.getString('id') || 'no_id');
+      const question_type = interaction.options.getString('question_type'); // 'mcq' | 'frq' | 'id' | null
       let division = interaction.options.getString('division');
       let subtopic = interaction.options.getString('subtopic');
       const difficultyLabel = interaction.options.getString('difficulty');
 
-      // Defaults for division/subtopic
+      // Defaults (leaving question_type blank must default to NON-image)
+      const isID = ALLOW_IMAGES && question_type === 'id';
+
       if (!division && DIVISIONS.length) division = DIVISIONS[Math.floor(Math.random()*DIVISIONS.length)];
       if (!subtopic && ALLOWED_SUBTOPICS.length) subtopic = ALLOWED_SUBTOPICS[Math.floor(Math.random()*ALLOWED_SUBTOPICS.length)];
 
@@ -167,7 +170,7 @@ module.exports = {
       // -------- Fetch question ----------
       let question = null;
 
-      if (idChoice === 'id') {
+      if (isID) {
         // Guaranteed identification (pictured) via /api/id-questions
         const params = prune({
           event: EVENT_NAME,
@@ -189,7 +192,7 @@ module.exports = {
           event: EVENT_NAME,
           division,
           subtopic,
-          question_type,
+          question_type: (question_type === 'mcq' || question_type === 'frq') ? question_type : undefined,
           difficulty_min,
           difficulty_max,
           limit: 1
@@ -210,11 +213,11 @@ module.exports = {
       }
 
       // -------- Send question embed (and also attach image files in ID mode) ----------
-      const embed = buildQuestionEmbed(question, idChoice);
+      const embed = buildQuestionEmbed(question, isID);
       const components = [buttonsRow(question.id || interaction.id)];
       const files = [];
 
-      if (idChoice === 'id') {
+      if (isID) {
         if (Array.isArray(question.images) && question.images.length > 0) {
           question.images.forEach((url, i) => {
             if (typeof url === 'string' && url.startsWith('http')) {
