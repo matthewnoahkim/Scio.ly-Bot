@@ -74,7 +74,7 @@ function buildQuestionEmbed(q, idChoice){
   );
   e.addFields(fields).setFooter({ text: 'Use the buttons below.' });
 
-  if (ALLOW_IMAGES && idChoice !== 'no_id') {
+  if (idChoice === 'id') {
     if (q.imageData) e.setImage(q.imageData);
     else if (Array.isArray(q.images) && q.images.length) e.setImage(q.images[0]);
   }
@@ -99,14 +99,16 @@ module.exports = {
          .addChoices({ name:'MCQ', value:'mcq' }, { name:'FRQ', value:'frq' })
       );
 
-    if (ALLOW_IMAGES) {
-      builder.addStringOption(o =>
-        o.setName('id')
-         .setDescription('Identification question (leave blank for random)')
-         .setRequired(false)
-         .addChoices({ name:'ID', value:'id' }, { name:'No ID', value:'no_id' })
-      );
-    }
+    const idChoices = ALLOW_IMAGES
+      ? [{ name:'ID', value:'id' }, { name:'No ID', value:'no_id' }]
+      : [{ name:'No ID', value:'no_id' }];
+
+    builder.addStringOption(o =>
+      o.setName('id')
+       .setDescription('Identification question (leave blank for random)')
+       .setRequired(false)
+       .addChoices(...idChoices)
+    );
 
     builder.addStringOption(o =>
       o.setName('division')
@@ -142,12 +144,13 @@ module.exports = {
       await interaction.deferReply();
 
       const question_type = interaction.options.getString('question_type');    // mcq | frq | null
-      const idChoice = ALLOW_IMAGES ? interaction.options.getString('id') : null; // 'id' | 'no_id' | null
+      // Default to 'no_id' (non-image) if user left it blank
+      const idChoice = (interaction.options.getString('id') || 'no_id');
       let division = interaction.options.getString('division');
       let subtopic = interaction.options.getString('subtopic');
       const difficultyLabel = interaction.options.getString('difficulty');
 
-      // Defaults
+      // Defaults for division/subtopic
       if (!division && DIVISIONS.length) division = DIVISIONS[Math.floor(Math.random()*DIVISIONS.length)];
       if (!subtopic && ALLOWED_SUBTOPICS.length) subtopic = ALLOWED_SUBTOPICS[Math.floor(Math.random()*ALLOWED_SUBTOPICS.length)];
 
@@ -164,7 +167,8 @@ module.exports = {
       // -------- Fetch question ----------
       let question = null;
 
-      if (ALLOW_IMAGES && idChoice === 'id') {
+      if (idChoice === 'id') {
+        // Guaranteed identification (pictured) via /api/id-questions
         const params = prune({
           event: EVENT_NAME,
           division,
@@ -180,6 +184,7 @@ module.exports = {
         question = pickFirst(res.data.data);
         if (!question) { await interaction.editReply('No identification questions found for your filters. Try different filters.'); return; }
       } else {
+        // Regular (non-ID) path — /api/questions (guaranteed to have no images)
         const params = prune({
           event: EVENT_NAME,
           division,
@@ -195,7 +200,7 @@ module.exports = {
         if (!listRes.data?.success) { await interaction.editReply('API error. Please try again later.'); return; }
         const first = pickFirst(listRes.data.data);
         if (!first) { await interaction.editReply('No questions found matching your criteria. Try different filters.'); return; }
-        // NOTE: no detail fetch fallback
+        // No detail fetch fallback
         question = first;
       }
 
@@ -204,12 +209,12 @@ module.exports = {
         return;
       }
 
-      // -------- Send question embed (and also attach image files) ----------
+      // -------- Send question embed (and also attach image files in ID mode) ----------
       const embed = buildQuestionEmbed(question, idChoice);
       const components = [buttonsRow(question.id || interaction.id)];
       const files = [];
 
-      if (ALLOW_IMAGES && idChoice !== 'no_id') {
+      if (idChoice === 'id') {
         if (Array.isArray(question.images) && question.images.length > 0) {
           question.images.forEach((url, i) => {
             if (typeof url === 'string' && url.startsWith('http')) {
@@ -290,6 +295,7 @@ module.exports = {
               await sub.reply({ embeds:[res] });
 
             } else {
+              // FRQ — use score only to decide Correct/Wrong (>50%), but do not display score/feedback
               try {
                 const correctAnswers =
                   Array.isArray(question.answers) ? question.answers.map(String)
