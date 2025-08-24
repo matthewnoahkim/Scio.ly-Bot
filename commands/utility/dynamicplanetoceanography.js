@@ -18,7 +18,7 @@ const {
 } = require('../../shared-id-utils');
 
 const COMMAND_NAME = 'dynamicplanetoceanography';
-const EVENT_NAME = 'Dynamic Planet Oceanography';
+const EVENT_NAME = 'Dynamic Planet - Oceanography';
 const DIVISIONS = getDivisions(EVENT_NAME);
 const ALLOWED_SUBTOPICS = ["Ocean Currents","Marine Life","Ocean Chemistry","Climate","Ecosystems"];
 const ALLOW_IMAGES = true;

@@ -18,7 +18,7 @@ const {
 } = require('../../shared-id-utils');
 
 const COMMAND_NAME = 'waterqualityfreshwater';
-const EVENT_NAME = 'Water Quality Freshwater';
+const EVENT_NAME = 'Water Quality - Freshwater';
 const DIVISIONS = getDivisions(EVENT_NAME);
 const ALLOWED_SUBTOPICS = ['PH', 'Dissolved Oxygen', 'Nutrients', 'Pollutants', 'Testing'];
 const ALLOW_IMAGES = true;
