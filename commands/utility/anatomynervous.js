@@ -16,7 +16,7 @@ const { letterFromIndex, getExplanationWithRetry } = require('../../shared-utils
 // ========= Event-specific constants =========
 const COMMAND_NAME = 'anatomynervous';
 const EVENT_NAME = 'Anatomy - Nervous';
-const DIVISIONS = ['C']; // allowed divisions
+const DIVISIONS = ['B', 'C']; // allowed divisions
 const ALLOWED_SUBTOPICS = ['Brain','Spinal Cord','Nerves','Reflexes','Neurotransmitters']; // allowed subtopics
 const ALLOW_IMAGES = true; // enable ID (pictured) questions for this event
 // ===========================================
@@ -91,41 +91,36 @@ const qtypeChoices = ALLOW_IMAGES
       ? [
           { name:'MCQ', value:'mcq' },
           { name:'FRQ', value:'frq' },
-          { name:'ID',  value:'id'  },
+          { name:'ID',  value:'id'  }
         ]
       : [
           { name:'MCQ', value:'mcq' },
-          { name:'FRQ', value:'frq' },
+          { name:'FRQ', value:'frq' }
         ];
         
 module.exports = {
-  data: (() => {
-    const builder = new SlashCommandBuilder()
-      .setName(COMMAND_NAME)
-      .setDescription(`Get a ${EVENT_NAME} question`);
-
-    builder.addStringOption(o =>
+  data: new SlashCommandBuilder()
+    .setName(COMMAND_NAME)
+    .setDescription(`Get a ${EVENT_NAME} question`)
+    .addStringOption(o =>
       o.setName('question_type')
        .setDescription('Question type (leave blank for random)')
        .setRequired(false)
        .addChoices(...qtypeChoices)
-    );
-
-    builder.addStringOption(o =>
+    )
+    .addStringOption(o =>
       o.setName('division')
        .setDescription('Division (leave blank for random)')
        .setRequired(false)
        .addChoices(...DIVISIONS.map(d => ({ name:`Division ${d}`, value:d })))
-    );
-
-    builder.addStringOption(o =>
+    )
+    .addStringOption(o =>
       o.setName('subtopic')
        .setDescription('Subtopic (leave blank for random)')
        .setRequired(false)
        .addChoices(...ALLOWED_SUBTOPICS.map(s => ({ name:s, value:s })))
-    );
-
-    builder.addStringOption(o =>
+    )
+    .addStringOption(o =>
       o.setName('difficulty')
        .setDescription('Difficulty (leave blank for random)')
        .setRequired(false)
@@ -134,11 +129,9 @@ module.exports = {
          { name:'Easy (20-39%)', value:'Easy (20-39%)' },
          { name:'Medium (40-59%)', value:'Medium (40-59%)' },
          { name:'Hard (60-79%)', value:'Hard (60-79%)' },
-         { name:'Very Hard (80-100%)', value:'Very Hard (80-100%)' },
+         { name:'Very Hard (80-100%)', value:'Very Hard (80-100%)' }
        )
-    );
-    return builder;
-  })(),
+    ),
 
   async execute(interaction){
     try {
@@ -154,6 +147,13 @@ module.exports = {
 
       if (!division && DIVISIONS.length) division = DIVISIONS[Math.floor(Math.random()*DIVISIONS.length)];
       if (!subtopic && ALLOWED_SUBTOPICS.length) subtopic = ALLOWED_SUBTOPICS[Math.floor(Math.random()*ALLOWED_SUBTOPICS.length)];
+
+      // For ID questions, always use B/C division regardless of user selection
+      if (isID) {
+        division = 'B/C';
+      }
+
+
 
       const difficultyMap = {
         'Very Easy (0-19%)': { min: 0.0, max: 0.19 },
