@@ -8,7 +8,7 @@ const { letterFromIndex, getExplanationWithRetry } = require('../../shared-utils
 const COMMAND_NAME = 'remotesensing';
 const EVENT_NAME = 'Remote Sensing';
 const DIVISIONS = ['B'];
-const ALLOWED_SUBTOPICS = ['Satellites','Imaging','Data Analysis','Applications','Technology'];
+const ALLOWED_SUBTOPICS = ["Sensors","Calibration","Design"];
 const ALLOW_IMAGES = true;
 
 const PRIMARY_BASE = 'https://scio.ly';
@@ -52,18 +52,26 @@ function buttonsRow(id){
 }
 function pickFirst(data){ if(!data) return null; if(Array.isArray(data)) return data[0]||null; if(Array.isArray(data.questions)) return data.questions[0]||null; if(data.id||data.base52||data.question) return data; return null; }
 
+// -------------------- Main Command --------------------
 module.exports = {
   data: new SlashCommandBuilder()
     .setName(COMMAND_NAME)
-    .setDescription(`Get a ${EVENT_NAME} question`)
-    .addStringOption(o=>o.setName('division').setDescription('Division').setRequired(false).addChoices(...DIVISIONS.map(d=>({name:`Division ${d}`, value:d}))))
-    .addStringOption(o=>o.setName('subtopic').setDescription('Subtopic').setRequired(false).addChoices(...ALLOWED_SUBTOPICS.map(s=>({name:s, value:s}))))
-    .addStringOption(o=>o.setName('question_type').setDescription('Question type').setRequired(false).addChoices({name:'MCQ', value:'mcq'}, {name:'FRQ', value:'frq'}))
-    .addStringOption(o=>o.setName('difficulty').setDescription('Difficulty').setRequired(false).addChoices(
-      {name:'Very Easy (0-19%)',value:'Very Easy (0-19%)'},{name:'Easy (20-39%)',value:'Easy (20-39%)'},
-      {name:'Medium (40-59%)',value:'Medium (40-59%)'},{name:'Hard (60-79%)',value:'Hard (60-79%)'},
-      {name:'Very Hard (80-100%)',value:'Very Hard (80-100%)'}
-    )),
+    .setDescription(`Get an ${EVENT_NAME} question`)
+    .addStringOption(option =>
+      option.setName('division').setDescription('Division').addChoices(...DIVISIONS.map(d => ({ name: `Division ${d}`, value: d }))))
+    .addStringOption(option =>
+      option.setName('subtopic').setDescription('Subtopic').addChoices(...ALLOWED_SUBTOPICS.map(s => ({ name: s, value: s }))))
+    .addStringOption(o=>o.setName('question_type').setDescription('Question type').setRequired(false).addChoices({name:'MCQ', value:'mcq'}, {name:'FRQ', value:'frq'}, {name:'ID', value:'id'}))
+    .addStringOption(option =>
+      option.setName('difficulty').setDescription('Difficulty').addChoices(
+        { name: 'Very Easy (0-19%)', value: 'Very Easy (0-19%)' },
+        { name: 'Easy (20-39%)', value: 'Easy (20-39%)' },
+        { name: 'Medium (40-59%)', value: 'Medium (40-59%)' },
+        { name: 'Hard (60-79%)', value: 'Hard (60-79%)' },
+        { name: 'Very Hard (80-100%)', value: 'Very Hard (80-100%)' }
+      )
+    ),
+
   async execute(interaction){
     try{
       await interaction.deferReply();
@@ -72,23 +80,51 @@ module.exports = {
       const question_type = interaction.options.getString('question_type');
       const dl = interaction.options.getString('difficulty');
       const dmap = {'Very Easy (0-19%)':{min:0,max:0.19}, 'Easy (20-39%)':{min:0.2,max:0.39}, 'Medium (40-59%)':{min:0.4,max:0.59}, 'Hard (60-79%)':{min:0.6,max:0.79}, 'Very Hard (80-100%)':{min:0.8,max:1}};
-      const params = prune({ event:EVENT_NAME, division, subtopic, question_type, difficulty_min: dl?dmap[dl].min:undefined, difficulty_max: dl?dmap[dl].max:undefined, limit:1 });
-
-      const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params, timeout:15000, headers:AUTH_HEADERS });
-      if(!listRes.data?.success){ await interaction.editReply('API error. Please try again later.'); return; }
-      let q = pickFirst(listRes.data.data); if(!q){ await interaction.editReply('No questions found matching your criteria. Try different filters.'); return; }
-      if(!q.base52 && q.id){ try{ const d=await axios.get(`${PRIMARY_BASE}/api/questions/${q.id}`, {timeout:15000, headers:AUTH_HEADERS}); if(d.data?.success&&d.data.data) q=d.data.data; }catch{} }
+      
+      let q;
+      let isID = false;
+      
+      if (question_type === 'id') {
+        // Handle ID questions - don't filter by division since ID questions use "B/C"
+        const params = prune({ event:EVENT_NAME, difficulty_min: dl?dmap[dl].min:undefined, difficulty_max: dl?dmap[dl].max:undefined, limit:1 });
+        try {
+          const response = await axios.get(`${PRIMARY_BASE}/api/id-questions`, { params, timeout:15000, headers:AUTH_HEADERS });
+          if (!response.data?.success || !response.data.data?.length) {
+            await interaction.editReply('No identification questions found for your filters. Try different filters.');
+            return;
+          }
+          q = pickFirst(response.data.data);
+          isID = true;
+        } catch (error) {
+          await interaction.editReply('Failed to fetch ID question. Please try again.');
+          return;
+        }
+      } else {
+        // Handle regular questions (MCQ/FRQ)
+        const params = prune({ event:EVENT_NAME, division, subtopic, question_type, difficulty_min: dl?dmap[dl].min:undefined, difficulty_max: dl?dmap[dl].max:undefined, limit:1 });
+        const listRes = await axios.get(`${PRIMARY_BASE}/api/questions`, { params, timeout:15000, headers:AUTH_HEADERS });
+        if(!listRes.data?.success){ await interaction.editReply('API error. Please try again later.'); return; }
+        q = pickFirst(listRes.data.data); if(!q){ await interaction.editReply('No questions found matching your criteria. Try different filters.'); return; }
+        if(!q.base52 && q.id){ try{ const d=await axios.get(`${PRIMARY_BASE}/api/questions/${q.id}`, {timeout:15000, headers:AUTH_HEADERS}); if(d.data?.success&&d.data.data) q=d.data.data; }catch{} }
+      }
+      
       if(!q.question){ await interaction.editReply('Question data is incomplete. Please try again.'); return; }
 
       const embed = buildEmbed(q);
       const files = [];
-      if(ALLOW_IMAGES){
-        if(Array.isArray(q.images) && q.images.length>1){
-          q.images.forEach((url,i)=>{ if(typeof url==='string'&&url.startsWith('http')) files.push({attachment:url, name:(url.split('/').pop()?.split('?')[0])||`image_${i+1}.jpg`}); });
-        } else if(q.imageData){
-          const url=q.imageData; files.push({attachment:url, name:(url.split('/').pop()?.split('?')[0])||'image.jpg'});
+      if(ALLOW_IMAGES && isID && q.images?.length > 0){
+        const imageUrl = q.images[0];
+        try {
+          const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000 });
+          const buffer = Buffer.from(imageResponse.data);
+          const filename = `image_${Date.now()}.jpg`;
+          files.push({ attachment: buffer, name: filename });
+          embed.setImage(`attachment://${filename}`);
+        } catch {
+          embed.setImage(imageUrl);
         }
       }
+      
       const sent = await interaction.editReply(files.length? {embeds:[embed], components:[buttonsRow(q.id||interaction.id)], files} : {embeds:[embed], components:[buttonsRow(q.id||interaction.id)]});
 
       const collector = sent.createMessageComponentCollector({ componentType:ComponentType.Button, time:30*60*1000, filter:i=>i.message.id===sent.id });
