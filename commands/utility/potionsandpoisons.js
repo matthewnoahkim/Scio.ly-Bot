@@ -21,7 +21,7 @@ const COMMAND_NAME = 'potionsandpoisons';
 const EVENT_NAME = 'Potions and Poisons';
 const DIVISIONS = getDivisions(EVENT_NAME);
 const ALLOWED_SUBTOPICS = ["Chemistry","Toxicity","Antidotes","Chemical Reactions","Safety"];
-const ALLOW_IMAGES = true;
+const ALLOW_IMAGES = false;
 
 const API_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;

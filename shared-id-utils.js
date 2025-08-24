@@ -9,11 +9,8 @@ const ID_EVENT_CONFIGS = {
   'Circuit Lab': { divisions: ['B/C'], idDivision: 'B/C' },
   'Rocks and Minerals': { divisions: ['B/C'], idDivision: 'B/C' },
   'Water Quality - Freshwater': { divisions: ['B/C'], idDivision: 'B/C' },
-  'Disease Detectives': { divisions: ['B/C'], idDivision: 'B/C' },
-  'Designer Genes': { divisions: ['B/C'], idDivision: 'B/C' },
-  'Potions and Poisons': { divisions: ['B/C'], idDivision: 'B/C' },
   'Remote Sensing': { divisions: ['B/C'], idDivision: 'B/C' },
-  'Dynamic Planet Oceanography': { divisions: ['B/C'], idDivision: 'B/C' }
+  'Dynamic Planet - Oceanography': { divisions: ['B/C'], idDivision: 'B/C' }
 };
 
 // ===== Helper Functions =====
