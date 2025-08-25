@@ -1,3 +1,8 @@
+
+
+// Ensure environment variables are loaded
+require('dotenv').config();
+
 const axios = require('axios');
 const {
   EmbedBuilder, 
@@ -23,6 +28,9 @@ const {
 // Constants
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
+
+
+
 const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` } : {};
 const COLORS = {
   BLUE: 0x2b90d9,
@@ -251,36 +259,89 @@ async function handleFRQGrading(question, userAnswer) {
     }]
   };
 
-  const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
-    headers: AUTH_HEADERS
-  });
+  try {
+    // Call Gemini grading API through scio.ly
+    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
+      headers: AUTH_HEADERS,
+      timeout: 30000 // 30 second timeout for AI grading
+    });
 
-  const grade = response.data?.data?.grades?.[0];
-  let score = null;
+    // Extract grading results from Gemini API response
+    const grade = response.data?.data?.grades?.[0];
+    let score = null;
+    let feedback = null;
+    let confidence = null;
 
-  if (grade && typeof grade.score === 'number') {
-    score = grade.score;
-  } else if (response.data?.data?.scores?.[0] != null) {
-    score = response.data.data.scores[0];
-  } else {
-    throw new Error('Grading service did not return a result');
+    // Parse the score from different possible response formats
+    if (grade && typeof grade.score === 'number') {
+      score = grade.score;
+    } else if (response.data?.data?.scores?.[0] != null) {
+      score = response.data.data.scores[0];
+    } else if (grade && typeof grade.percentage === 'number') {
+      score = grade.percentage / 100;
+    } else {
+      throw new Error('Gemini grading service did not return a valid score');
+    }
+
+    // Extract additional feedback if available
+    if (grade && grade.feedback) {
+      feedback = grade.feedback;
+    } else if (grade && grade.comments) {
+      feedback = grade.comments;
+    }
+
+    // Extract confidence score if available
+    if (grade && typeof grade.confidence === 'number') {
+      confidence = grade.confidence;
+    }
+
+    // Validate score is within valid range
+    if (score < 0 || score > 1) {
+      score = Math.max(0, Math.min(1, score)); // Clamp to 0-1 range
+    }
+
+    const percentageScore = Math.round(score * 100);
+    const isCorrect = percentageScore > 50;
+    
+    // Format the expected answer for display
+    const expectedAnswer = correctAnswers.length 
+      ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+      : '—';
+
+    const embed = new EmbedBuilder()
+      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+      .setDescription('**AI-Powered Grading Results**')
+      .addFields(
+        { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+        { name: 'Expected answer', value: expectedAnswer || '—', inline: false },
+        { name: 'AI Grade', value: `**${Math.round(score * 100)}%**`, inline: true }
+      )
+      .setFooter({ text: `Graded by AI • Score: ${Math.round(score * 100)}%` });
+
+    return { embed, isCorrect, score };
+
+  } catch (error) {
+    console.error('Gemini FRQ grading error:', error);
+    
+    // Enhanced error handling for different types of failures
+    if (error.response?.status === 429) {
+      throw new Error('Gemini grading service is rate-limited. Please try again in a moment.');
+    } else if (error.response?.status === 503 || error.response?.status === 502) {
+      throw new Error('Gemini grading service is temporarily unavailable. Please try again shortly.');
+    } else if (error.response?.status === 401 || error.response?.status === 403) {
+      throw new Error('Authentication failed for Gemini grading service. Please check your API configuration.');
+    } else if (error.code === 'ECONNABORTED') {
+      throw new Error('Gemini grading request timed out. The AI service may be busy.');
+    } else if (error.message.includes('did not return a valid score')) {
+      throw new Error('Gemini grading service returned an invalid response. Please try again.');
+    } else {
+      throw new Error(`Gemini grading failed: ${error.message || 'Unknown error'}. Please try again shortly.`);
+    }
   }
-
-  const isCorrect = Math.round(score * 100) > 50;
-  const expectedAnswer = correctAnswers.length 
-    ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
-    : '—';
-
-  const embed = new EmbedBuilder()
-    .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-    .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
-    .addFields(
-      { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
-      { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
-    );
-
-  return { embed, isCorrect, score };
 }
+
+
 
 /**
  * Create answer check modal
@@ -354,7 +415,7 @@ async function handleCheckAnswerInteraction(interaction, question) {
   try {
     const modalSubmit = await interaction.awaitModalSubmit({
       time: 5 * 60 * 1000, // 5 minutes
-      filter: i => i.customId === modal.data.custom_id && i.user.id === interaction.user.id
+      filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
     });
 
     const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
