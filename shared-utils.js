@@ -1,10 +1,8 @@
 const axios = require('axios');
-const keyManager = require('./key-manager');
 
 // ====== Config ======
 const PRIMARY_BASE = 'https://scio.ly';
 const FALLBACK_BASE = 'https://scioly-api.vercel.app';
-const USE_DIRECT_GEMINI = keyManager.getKeyCount() > 0; // Use direct Gemini if any API key is available
 
 // ===== Shared Helper Functions =====
 function letterFromIndex(idx) {
@@ -14,6 +12,30 @@ function letterFromIndex(idx) {
 function buildFullQuestionText(question) {
   let fullText = question.question || '';
   
+  // Check if the question text is too short or incomplete
+  if (fullText.length < 10) {
+    // Try to build a more complete question from available data
+    let reconstructedQuestion = '';
+    
+    if (question.subtopics && question.subtopics.length > 0) {
+      reconstructedQuestion += `This is a ${question.event || 'Science Olympiad'} question about ${question.subtopics.join(', ')}.`;
+    }
+    
+    if (fullText.trim()) {
+      reconstructedQuestion += ` ${fullText.trim()}`;
+    }
+    
+    if (question.answers && question.answers.length > 0) {
+      reconstructedQuestion += ` The expected answer is: ${question.answers.join(', ')}`;
+    }
+    
+    if (reconstructedQuestion) {
+      fullText = reconstructedQuestion;
+    } else {
+      fullText = `This is a ${question.event || 'Science Olympiad'} question that needs explanation.`;
+    }
+  }
+  
   // If it's an MCQ question, append the options
   if (Array.isArray(question.options) && question.options.length > 0) {
     const answerChoices = question.options
@@ -22,7 +44,9 @@ function buildFullQuestionText(question) {
     fullText += '\n\nAnswer Choices:' + answerChoices;
   } else {
     // For FRQ questions, add context to make it clear this is a complete question
-    fullText = `Question: ${fullText}`;
+    if (!fullText.toLowerCase().includes('question')) {
+      fullText = `Question: ${fullText}`;
+    }
     
     // Add additional context if available
     if (question.answers && Array.isArray(question.answers) && question.answers.length > 0) {
@@ -43,91 +67,57 @@ function buildTutorPrompt(questionText, eventName) {
 ${questionText}
 
 Instructions:
-- Provide a step-by-step explanation that helps students understand the concepts
+- Provide a concise but complete step-by-step explanation (aim for 200-400 words)
 - If this is a multiple choice question, analyze each answer choice and explain why the correct answer is right and why the others are wrong
 - If this is a free response question, provide a comprehensive explanation that covers all key concepts and expected points
 - Use clear scientific terminology and explain any complex concepts
 - Format your response to be educational and engaging for high school students
 - Focus on teaching the underlying science, not just giving the answer
+- Keep your response concise to avoid truncation in Discord
 
 Please provide your explanation:`
 
   return prompt;
 }
 
-async function callGeminiDirectly(prompt, logPrefix = 'shared') {
-  if (keyManager.getKeyCount() === 0) {
-    throw new Error('No Gemini API keys available. Please add GEMINI_API_KEY to your environment variables.');
-  }
+async function callGeminiThroughScioLy(question, eventName, userAnswer, authHeaders, logPrefix = 'shared') {
+  // Build the request body matching the curl example format
+  const requestBody = {
+    question: question,
+    event: eventName,
+    userAnswer: userAnswer || null
+  };
   
-  console.log(`[${logPrefix}] Calling Gemini directly...`);
-  console.log(`[${logPrefix}] Prompt length:`, prompt.length, 'characters');
-  
-  // Try with multiple keys if available
-  const maxRetries = keyManager.hasMultipleKeys() ? keyManager.getKeyCount() : 1;
-  let lastError = null;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const keyInfo = keyManager.getNextKey();
-      console.log(`[${logPrefix}] Attempt ${attempt + 1}/${maxRetries} with key ${keyInfo.keyNumber}/${keyInfo.totalKeys}`);
-      
-      const response = await axios.post('https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent', {
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-          topP: 0.8,
-          topK: 40
-        }
-      }, {
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        params: {
-          key: keyInfo.key
-        }
-      });
-      
-      console.log(`[${logPrefix}] Direct Gemini call successful with key ${keyInfo.keyNumber}`);
-      keyManager.reportResult(keyInfo.keyIndex, true);
-      
-      // Extract the response text from Gemini's format
-      const responseText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!responseText) {
-        throw new Error('No response text found in Gemini response');
-      }
-      
-      console.log(`[${logPrefix}] Gemini response length:`, responseText.length);
-      return responseText;
-      
-    } catch (error) {
-      lastError = error;
-      console.log(`[${logPrefix}] Direct Gemini call failed with key ${attempt + 1}:`, error.response?.data || error.message);
-      
-      // Report failure to key manager
-      if (keyManager.hasMultipleKeys()) {
-        const keyInfo = keyManager.getNextKey(); // This will rotate to next key
-        keyManager.reportResult(keyInfo.keyIndex, false);
-      }
-      
-      // If this is the last attempt, throw the error
-      if (attempt === maxRetries - 1) {
-        throw lastError;
-      }
-      
-      // Wait a bit before trying the next key
-      await new Promise(resolve => setTimeout(resolve, 1000));
+  try {
+    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, requestBody, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders
+      },
+      timeout: 30000
+    });
+    
+    // Extract the response text
+    const responseText = extractExplanation(response.data);
+    if (!responseText) {
+      throw new Error('No explanation text found in scio.ly response');
     }
+    
+    return responseText;
+    
+  } catch (error) {
+    console.error(`[${logPrefix}] scio.ly API error:`, error.response?.status, error.response?.data?.message || error.message);
+    throw error;
   }
 }
 
 function extractExplanation(responseData) {
-  // Try different possible response formats
+  // For scio.ly API, check success first then extract explanation
+  if (responseData?.success && responseData?.data?.explanation) {
+    return responseData.data.explanation;
+  }
+  
+  // Try different possible response formats for fallback APIs
   if (responseData?.data) {
     if (typeof responseData.data === 'string') {
       return responseData.data;
@@ -155,39 +145,11 @@ function extractExplanation(responseData) {
 }
 
 async function getExplanationWithRetry(question, eventName, authHeaders, logPrefix = 'shared') {
-  // Build the question text once to ensure consistency
+  // Build the question text once to ensure consistency  
   const fullQuestionText = buildFullQuestionText(question);
-  const tutorPrompt = buildTutorPrompt(fullQuestionText, eventName);
   
-
-  
-  // Try direct Gemini first if API key is available
-  if (USE_DIRECT_GEMINI) {
-    console.log(`[${logPrefix}] Using direct Gemini API`);
-    try {
-      const explanation = await callGeminiDirectly(tutorPrompt, logPrefix);
-      
-      // Validate the explanation
-      if (explanation && explanation.length > 50) {
-        // Check if the explanation actually relates to our question
-        const questionKeywords = fullQuestionText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
-        const explanationLower = explanation.toLowerCase();
-        const matchingKeywords = questionKeywords.filter(keyword => explanationLower.includes(keyword));
-        
-        if (matchingKeywords.length / questionKeywords.length >= 0.3) {
-          return explanation;
-        } else {
-          console.log(`[${logPrefix}] Direct Gemini explanation is unrelated, falling back to scio.ly`);
-        }
-      }
-    } catch (error) {
-      console.log(`[${logPrefix}] Direct Gemini failed, falling back to scio.ly:`, error.message);
-    }
-  }
-  
-  // Fallback to scio.ly API
-  console.log(`[${logPrefix}] Using scio.ly API fallback`);
-  let explainRes;
+  // Use scio.ly API for explanations
+  console.log(`[${logPrefix}] Using scio.ly API for explanations`);
   let retryCount = 0;
   const maxRetries = 3;
   
@@ -195,54 +157,43 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
     try {
       console.log(`[${logPrefix}] scio.ly API attempt ${retryCount + 1}/${maxRetries + 1}`);
       
-      const requestBody = {
-        question: tutorPrompt,
-        event: eventName,
-        streaming: false,
-        questionId: question.id || null
-      };
+      // Use the new scio.ly explain format matching the curl example
+      const explanation = await callGeminiThroughScioLy(question, eventName, null, authHeaders, logPrefix);
       
-      console.log(`[${logPrefix}] scio.ly API request body keys:`, Object.keys(requestBody));
-      console.log(`[${logPrefix}] Question length being sent:`, requestBody.question.length);
-      
-      explainRes = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, requestBody, { headers: authHeaders });
-      console.log(`[${logPrefix}] scio.ly explanation API success on attempt ${retryCount + 1}`);
-      
-      // Check if we got a valid explanation (not an error message)
-      const tempExplanation = extractExplanation(explainRes.data);
-      console.log(`[${logPrefix}] Temp explanation preview:`, tempExplanation ? tempExplanation.substring(0, 100) + '...' : 'null');
-      console.log(`[${logPrefix}] Full API response data:`, JSON.stringify(explainRes.data, null, 2));
-      
-      if (tempExplanation && 
-          !tempExplanation.includes('I apologize, but you have not provided a question') &&
-          !tempExplanation.includes('question itself was not provided') &&
-          !tempExplanation.includes('Please provide the') &&
-          tempExplanation.length > 50) {
+      // Validate the explanation
+      if (explanation && 
+          !explanation.includes('I apologize, but you have not provided a question') &&
+          !explanation.includes('question itself was not provided') &&
+          !explanation.includes('Please provide the') &&
+          explanation.length > 50) {
         
-        // Check if the explanation actually relates to our question
-        const questionKeywords = fullQuestionText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
-        const explanationLower = tempExplanation.toLowerCase();
+        // Use more lenient keyword matching - only check against the actual question text, not the formatted version
+        const actualQuestionText = question.question || '';
+        const questionKeywords = actualQuestionText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
+        const explanationLower = explanation.toLowerCase();
         const matchingKeywords = questionKeywords.filter(keyword => explanationLower.includes(keyword));
         
-        console.log(`[${logPrefix}] Question keywords:`, questionKeywords.slice(0, 10));
-        console.log(`[${logPrefix}] Matching keywords in explanation:`, matchingKeywords);
-        console.log(`[${logPrefix}] Keyword match percentage: ${(matchingKeywords.length / questionKeywords.length * 100).toFixed(1)}%`);
+        console.log(`[${logPrefix}] Question keywords from actual question:`, questionKeywords.slice(0, 10));
+        console.log(`[${logPrefix}] Matching keywords in explanation:`, matchingKeywords.slice(0, 10));
+        console.log(`[${logPrefix}] Keyword match percentage: ${questionKeywords.length > 0 ? (matchingKeywords.length / questionKeywords.length * 100).toFixed(1) : 'N/A'}%`);
         
-        if (matchingKeywords.length / questionKeywords.length < 0.3) {
-          console.log(`[${logPrefix}] ERROR: Explanation is completely unrelated to the question! Only ${(matchingKeywords.length / questionKeywords.length * 100).toFixed(1)}% keyword match.`);
+        // Very lenient threshold - only reject if less than 5% keyword match
+        const keywordMatchPercentage = questionKeywords.length > 0 ? (matchingKeywords.length / questionKeywords.length) : 1;
+        if (questionKeywords.length > 0 && keywordMatchPercentage < 0.05 && actualQuestionText.length > 20) {
+          console.log(`[${logPrefix}] WARNING: Very low keyword match (${(keywordMatchPercentage * 100).toFixed(1)}%), may be unrelated explanation`);
           if (retryCount < maxRetries) {
-            console.log(`[${logPrefix}] Will retry due to completely wrong explanation...`);
+            console.log(`[${logPrefix}] Will retry due to potential mismatch...`);
             await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
             retryCount++;
             continue;
           } else {
-            console.log(`[${logPrefix}] All retries exhausted, returning error message`);
-            return 'The API returned an explanation for a different question. This appears to be an API issue. Please try again in a moment.';
+            console.log(`[${logPrefix}] All retries exhausted, but returning explanation anyway`);
           }
         }
         
         console.log(`[${logPrefix}] Valid explanation received, breaking retry loop`);
-        break;
+        return explanation;
+        
       } else if (retryCount < maxRetries) {
         console.log(`[${logPrefix}] Received error message or insufficient response, will retry...`);
         await new Promise(resolve => setTimeout(resolve, 1500 * (retryCount + 1)));
@@ -259,38 +210,27 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
         continue;
       }
       
-      // If all retries failed, try fallback API
+      // If all retries failed, try fallback API with legacy format
       console.log(`[${logPrefix}] All scio.ly API retries failed, trying fallback...`);
       try {
-        explainRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
+        const tutorPrompt = buildTutorPrompt(fullQuestionText, eventName);
+        const fallbackRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
           question: tutorPrompt,
           event: eventName,
           streaming: false
         }, { headers: authHeaders });
         console.log(`[${logPrefix}] Fallback explanation API success`);
+        
+        const explanation = extractExplanation(fallbackRes.data) || 'No explanation was returned.';
+        return explanation;
       } catch (fallbackErr) {
         console.log(`[${logPrefix}] Fallback explanation API also failed:`, fallbackErr?.response?.status, fallbackErr?.response?.data);
         throw fallbackErr;
       }
-      break;
     }
   }
   
-  // Extract explanation using helper function
-  const explanation = extractExplanation(explainRes.data) || 'No explanation was returned.';
-  console.log(`[${logPrefix}] Extracted explanation length:`, explanation.length);
-  
-  // Check if the explanation is actually an error message
-  if (explanation && (
-      explanation.includes('I apologize, but you have not provided a question') ||
-      explanation.includes('question itself was not provided') ||
-      explanation.includes('Please provide the') ||
-      explanation.length < 50)) {
-    console.log(`[${logPrefix}] API returned error message or insufficient response instead of explanation`);
-    return 'The API returned an error message. This might be due to rate limiting or temporary issues. Please try again in a moment.';
-  }
-  
-  return explanation;
+  return 'The API returned an error message. This might be due to rate limiting or temporary issues. Please try again in a moment.';
 }
 
 module.exports = {
@@ -299,5 +239,5 @@ module.exports = {
   buildTutorPrompt,
   extractExplanation,
   getExplanationWithRetry,
-  callGeminiDirectly
+  callGeminiThroughScioLy
 }; 
