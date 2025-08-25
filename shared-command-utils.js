@@ -11,6 +11,14 @@ const {
 } = require('discord.js');
 const { letterFromIndex, getExplanationWithRetry } = require('./shared-utils');
 const { getDivisions, buildQuestionTypeChoices, handleIDQuestionLogic } = require('./shared-id-utils');
+const { 
+  getSupportedDivisions, 
+  getDefaultDivision, 
+  supportsQuestionType, 
+  supportsID, 
+  getFallbackDivision, 
+  getUnsupportedMessage 
+} = require('./event-capabilities');
 
 // Constants
 const PRIMARY_BASE = 'https://scio.ly';
@@ -141,17 +149,48 @@ async function fetchQuestion(eventName, options = {}) {
     limit
   });
 
+  console.log(`[DEBUG] fetchQuestion called with:`, { eventName, options });
+  console.log(`[DEBUG] API call params:`, params);
   const response = await axios.get(`${PRIMARY_BASE}/api/questions`, {
     params,
     timeout: 15000,
     headers: AUTH_HEADERS
+  });
+  console.log(`[DEBUG] API response:`, { 
+    success: response.data?.success, 
+    dataLength: response.data?.data?.length,
+    data: response.data?.data 
   });
 
   if (!response.data?.success) {
     throw new Error('API returned unsuccessful response');
   }
 
-  const question = pickFirstQuestion(response.data.data);
+  let question = pickFirstQuestion(response.data.data);
+  
+  // If no question found and subtopic was specified, try without subtopic
+  if (!question && subtopic) {
+    console.log(`[DEBUG] No questions found with subtopic '${subtopic}', trying without subtopic...`);
+    const fallbackParams = prune({
+      event: eventName,
+      division,
+      question_type: questionType,
+      difficulty_min: difficultyMin,
+      difficulty_max: difficultyMax,
+      limit
+    });
+    
+    const fallbackResponse = await axios.get(`${PRIMARY_BASE}/api/questions`, {
+      params: fallbackParams,
+      timeout: 15000,
+      headers: AUTH_HEADERS
+    });
+    
+    if (fallbackResponse.data?.success) {
+      question = pickFirstQuestion(fallbackResponse.data.data);
+    }
+  }
+  
   if (!question) {
     throw new Error('No questions found matching criteria');
   }
@@ -455,14 +494,29 @@ function createSciOlyCommand(config) {
       try {
         await interaction.deferReply();
 
-        // Parse options
-        const division = interaction.options.getString('division') || divisions[0];
-        const subtopic = interaction.options.getString('subtopic') || 
-          allowedSubtopics[Math.floor(Math.random() * allowedSubtopics.length)];
+        // Parse options with smart defaults based on event capabilities
+        let division = interaction.options.getString('division') || getDefaultDivision(eventName);
+        const subtopic = interaction.options.getString('subtopic'); // Don't auto-select subtopic
         const questionType = interaction.options.getString('question_type');
         const difficultyLevel = interaction.options.getString('difficulty');
         
         const difficulty = difficultyLevel ? DIFFICULTY_MAP[difficultyLevel] : null;
+        
+        // Check if the requested combination is supported
+        if (questionType && !supportsQuestionType(eventName, division, questionType)) {
+          const fallbackDivision = getFallbackDivision(eventName, division, questionType);
+          const unsupportedMessage = getUnsupportedMessage(eventName, division, questionType);
+          
+          if (fallbackDivision !== division) {
+            division = fallbackDivision;
+            await interaction.followUp({ 
+              content: unsupportedMessage, 
+              ephemeral: true 
+            });
+          }
+        }
+        
+
 
         let question;
         let isID = false;
