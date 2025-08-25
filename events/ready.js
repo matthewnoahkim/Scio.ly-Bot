@@ -1,22 +1,24 @@
 const { Events, ActivityType } = require('discord.js');
-const statuses = [
-    { name: 'I'},
-    { name: 'love'},
-    { name: 'SciOly'}
-];
+
+const pulses = ['I', '❤️', 'SciOly!'];
+const INTERVAL_MS = 1000; // 1s — note: frequent updates may hit rate limits
 
 module.exports = {
-	name: Events.ClientReady,
-	once: true,
-	execute(client) {
-		console.log(`${client.user.tag} is ready! Serving ${client.guilds.cache.size} servers.`);
-		client.user.setActivity('scio.ly', {
-			type: ActivityType.Playing,
-		});
-		let i = 0;
-    	setInterval(() => {
-        	client.user.setStatus(statuses[i].name);
-        	i = (i + 1) % statuses.length;
-    	}, 1000);
-	}
+  name: Events.ClientReady,
+  once: true,
+  execute(client) {
+    console.log(`${client.user.tag} is ready! Serving ${client.guilds.cache.size} servers.`);
+
+    let i = 0;
+    const updatePresence = () => {
+      const suffix = pulses[i];
+      client.user
+        .setActivity(`scio.ly — ${suffix}`, { type: ActivityType.Playing })
+        .catch(console.error);
+      i = (i + 1) % pulses.length;
+    };
+
+    updatePresence();                  // initial: "Playing scio.ly — I"
+    setInterval(updatePresence, INTERVAL_MS);
+  },
 };
