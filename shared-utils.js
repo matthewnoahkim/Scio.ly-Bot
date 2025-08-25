@@ -82,8 +82,15 @@ Please provide your explanation:`
 
 async function callGeminiThroughScioLy(question, eventName, userAnswer, authHeaders, logPrefix = 'shared') {
   // Build the request body matching the curl example format
+  // Important: We need to format the question text properly before sending
+  const formattedQuestion = {
+    ...question,
+    // Override the question text with properly formatted version that includes A, B, C, D labels
+    question: buildFullQuestionText(question)
+  };
+  
   const requestBody = {
-    question: question,
+    question: formattedQuestion,
     event: eventName,
     userAnswer: userAnswer || null
   };
