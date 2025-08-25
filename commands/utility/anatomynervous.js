@@ -140,34 +140,62 @@ module.exports = {
             let sub; try{ sub=await btn.awaitModalSubmit({ time:5*60*1000, filter:i=>i.customId===modalId && i.user.id===interaction.user.id }); }catch{ return; }
             const userAnswer=String(sub.fields.getTextInputValue('answer_input')||'').trim();
 
-            if(isMCQ){
-              const opts=q.options||[]; if(!opts.length){ await sub.reply('This question has no options — cannot check as MCQ.'); return; }
-              const L=(userAnswer[0]||'').toUpperCase(); const idx=L.charCodeAt(0)-65; if(!(idx>=0&&idx<opts.length)){ await sub.reply(`Invalid choice. Please enter a letter between A and ${letter(opts.length-1)}.`); return; }
-              const cIdx=resolveCorrectIndex(q); const correct = idx===cIdx;
-              const res=new EmbedBuilder().setColor(correct?COLOR_GREEN:COLOR_RED).setTitle(correct?'✅ Correct!':'❌ Wrong.').addFields(
-                {name:'Your answer', value:`**${letter(idx)})** ${opts[idx]}`, inline:true},
-                {name:'Correct answer', value:`**${letter(cIdx)})** ${opts[cIdx]}`, inline:true},
-              );
-              await sub.reply({embeds:[res]});
-            } else {
-              try{
-                const correctAnswers = Array.isArray(q.answers)? q.answers.map(String) : (typeof q.answers==='string'? [q.answers] : []);
-                const body = { responses:[{ question:q.question, correctAnswers, studentAnswer:userAnswer }] };
-                const g = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, body, {headers:AUTH_HEADERS});
-                const grade=g.data?.data?.grades?.[0]; let score=null;
-                if(grade && typeof grade.score==='number') score=grade.score; else if(g.data?.data?.scores?.[0]!=null) score=g.data.data.scores[0]; else { await sub.reply('Grading service did not return a result. Please try again shortly.'); return; }
-                const isCorrect = Math.round(score*100) > 50;
-                const expected = correctAnswers.length? (correctAnswers.join('; ').slice(0,1000)+(correctAnswers.join('; ').length>1000?'…':'')) : '—';
-                const res=new EmbedBuilder().setColor(isCorrect?COLOR_GREEN:COLOR_RED).setTitle(isCorrect?'✅ Correct!':'❌ Wrong.').addFields(
-                  {name:'Your answer', value:userAnswer.slice(0,1024)||'—', inline:false},
-                  {name:'Expected answer', value:expected||'—', inline:false},
+            if (isMCQ) {
+              const opts = question.options || [];
+              if (!opts.length) { await sub.reply('This question has no options — cannot check as MCQ.'); return; }
+              const letter = (userAnswer[0] || '').toUpperCase();
+              const idx = letter.charCodeAt(0) - 65;
+              if (!(idx >= 0 && idx < opts.length)) {
+                await sub.reply(`Invalid choice. Please enter a letter between A and ${letterFromIndex(opts.length - 1)}.`);
+                return;
+              }
+              const cIdx = resolveCorrectIndex(question);
+              const correct = idx === cIdx;
+
+              const res = new EmbedBuilder()
+                .setColor(correct ? COLOR_GREEN : COLOR_RED)
+                .setTitle(correct ? 'Correct!' : 'Wrong.')
+                .addFields(
+                  { name:'Your answer', value:`**${letterFromIndex(idx)})** ${opts[idx]}`, inline:true },
+                  { name:'Correct answer', value:`**${letterFromIndex(cIdx)})** ${opts[cIdx]}`, inline:true },
                 );
-                await sub.reply({embeds:[res]});
-              }catch(err){
-                if(err?.response?.status===429) await sub.reply('The grading service is rate-limited right now. Please try again in a moment.');
-                else if(err?.response?.status===401||err?.response?.status===403) await sub.reply('Authentication failed for grading. Check your API key.');
-                else if(err?.response?.status) await sub.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText||'Unknown error'}. Please try again shortly.`);
-                else await sub.reply(`Grading failed: ${err?.message||'Network or connection error'}. Please try again shortly.`);
+              await sub.reply({ embeds:[res] });
+
+            } else {
+              // FRQ — use score only to decide Correct/Wrong (>50%), but do not display score/feedback
+              try {
+                const correctAnswers =
+                  Array.isArray(question.answers) ? question.answers.map(String)
+                  : typeof question.answers === 'string' ? [question.answers]
+                  : [];
+
+                const body = { responses: [{ question: question.question, correctAnswers, studentAnswer: userAnswer }] };
+                const g = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, body, { headers: AUTH_HEADERS });
+
+                const grade = g.data?.data?.grades?.[0];
+                let score = null;
+                if (grade && typeof grade.score === 'number') score = grade.score;
+                else if (g.data?.data?.scores?.[0] !== undefined) score = g.data.data.scores[0];
+                else { await sub.reply('Grading service did not return a result. Please try again shortly.'); return; }
+
+                const isCorrect = Math.round(score * 100) > 50;
+                const expected = correctAnswers.length
+                  ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+                  : '—';
+
+                const res = new EmbedBuilder()
+                  .setColor(isCorrect ? COLOR_GREEN : COLOR_RED)
+                  .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+                  .addFields(
+                    { name:'Your answer', value: userAnswer.slice(0, 1024) || '—', inline:false },
+                    { name:'Expected answer', value: expected || '—', inline:false },
+                  );
+                await sub.reply({ embeds:[res] });
+              } catch (err) {
+                if (err?.response?.status === 429) await sub.reply('The grading service is rate-limited right now. Please try again in a moment.');
+                else if (err?.response?.status === 401 || err?.response?.status === 403) await sub.reply('Authentication failed for grading. Check your API key.');
+                else if (err?.response?.status) await sub.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText || 'Unknown error'}. Please try again shortly.`);
+                else await sub.reply(`Grading failed: ${err?.message || 'Network or connection error'}. Please try again shortly.`);
               }
             }
           } else if(btn.customId===`explain_${q.id||interaction.id}`){

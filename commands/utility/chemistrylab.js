@@ -143,7 +143,7 @@ module.exports = {
               const opts=q.options||[]; if(!opts.length){ await sub.reply('This question has no options — cannot check as MCQ.'); return; }
               const L=(userAnswer[0]||'').toUpperCase(); const idx=L.charCodeAt(0)-65; if(!(idx>=0&&idx<opts.length)){ await sub.reply(`Invalid choice. Please enter a letter between A and ${letter(opts.length-1)}.`); return; }
               const cIdx=resolveCorrectIndex(q); const correct = idx===cIdx;
-              const res=new EmbedBuilder().setColor(correct?COLOR_GREEN:COLOR_RED).setTitle(correct?'✅ Correct!':'❌ Wrong.').addFields(
+              const res=new EmbedBuilder().setColor(correct?COLOR_GREEN:COLOR_RED).setTitle(correct?'Correct!':'Wrong.').addFields(
                 {name:'Your answer', value:`**${letter(idx)})** ${opts[idx]}`, inline:true},
                 {name:'Correct answer', value:`**${letter(cIdx)})** ${opts[cIdx]}`, inline:true},
               );
@@ -157,14 +157,14 @@ module.exports = {
                 if(grade && typeof grade.score==='number') score=grade.score; else if(g.data?.data?.scores?.[0]!=null) score=g.data.data.scores[0]; else { await sub.reply('Grading service did not return a result. Please try again shortly.'); return; }
                 const isCorrect = Math.round(score*100) > 50;
                 const expected = correctAnswers.length? (correctAnswers.join('; ').slice(0,1000)+(correctAnswers.join('; ').length>1000?'…':'')) : '—';
-                const res=new EmbedBuilder().setColor(isCorrect?COLOR_GREEN:COLOR_RED).setTitle(isCorrect?'✅ Correct!':'❌ Wrong.').addFields(
+                const res=new EmbedBuilder().setColor(isCorrect?COLOR_GREEN:COLOR_RED).setTitle(isCorrect?'Correct!':'Wrong.').addFields(
                   {name:'Your answer', value:userAnswer.slice(0,1024)||'—', inline:false},
                   {name:'Expected answer', value:expected||'—', inline:false},
                 );
                 await sub.reply({embeds:[res]});
               }catch(err){
-                if(err?.response?.status===429) await sub.reply('The grading service is rate-limited right now. Please try again in a moment.');
-                else if(err?.response?.status===401||err?.response?.status===403) await sub.reply('Authentication failed for grading. Check your API key.');
+                if(err?.response?.status===429) await sub.reply('The The grading service is rate-limited right now. Please try again in a moment.');
+                else if(err?.response?.status===401||err?.response?.status===403) await sub.reply('Authentication Authentication failed for grading. Check your API key.');
                 else if(err?.response?.status) await sub.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText||'Unknown error'}. Please try again shortly.`);
                 else await sub.reply(`Grading failed: ${err?.message||'Network or connection error'}. Please try again shortly.`);
               }
@@ -178,8 +178,8 @@ module.exports = {
               if(text.length<=4096){ e.setDescription(text); await btn.editReply({embeds:[e]}); }
               else { e.setDescription('The full explanation is attached as a file below.'); await btn.editReply({embeds:[e], files:[{attachment:Buffer.from(text,'utf-8'), name:'explanation.txt'}]}); }
             }catch(err){
-              if(err?.response?.status===429) await btn.editReply('The explanation service is rate-limited right now. Please try again in a moment.');
-              else if(err?.response?.status===401||err?.response?.status===403) await btn.editReply('Authentication failed for explanation. Check your API key.');
+              if(err?.response?.status===429) await btn.editReply('The The explanation service is rate-limited right now. Please try again in a moment.');
+              else if(err?.response?.status===401||err?.response?.status===403) await btn.editReply('Authentication Authentication failed for explanation. Check your API key.');
               else if(err?.response?.status) await btn.editReply(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText||'Unknown error'}. Please try again shortly.`);
               else await btn.editReply(`Could not fetch an explanation: ${err?.message||'Network or connection error'}. Please try again shortly.`);
             }

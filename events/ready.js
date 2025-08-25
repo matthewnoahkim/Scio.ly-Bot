@@ -4,8 +4,8 @@ module.exports = {
 	name: Events.ClientReady,
 	once: true,
 	execute(client) {
-		console.log(`Ready! Logged in as ${client.user.tag}`);
-		client.user.setActivity('https://scio.ly/', {
+		console.log(`${client.user.tag} is ready! Serving ${client.guilds.cache.size} servers.`);
+		client.user.setActivity('Science Olympiad questions | scio.ly', {
 			type: ActivityType.Playing,
 		});
 	}
