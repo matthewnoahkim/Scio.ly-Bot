@@ -2,7 +2,7 @@
 
 > **A Science Olympiad study companion powered by scio.ly**
 
-[![Add to Server](https://img.shields.io/badge/Add%20to%20Server-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://tinyurl.com/hylasthecat)
+[![Add to Server](https://img.shields.io/badge/Add%20to%20Server-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://tinyurl.com/hylasthecat2)
 [![Support Server](https://img.shields.io/badge/Support%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/BG8aTQnc7k)
 [![Scio.ly Website](https://img.shields.io/badge/Scio.ly-FF6B6B?style=for-the-badge&logo=web&logoColor=white)](https://scio.ly/)
 
@@ -17,7 +17,7 @@
 
 ## Quick Start
 
-1. [Add Hylas to your Discord server](https://tinyurl.com/hylasthecat)
+1. [Add Hylas to your Discord server](https://tinyurl.com/hylasthecat2)
 2. Use `/astronomy` (or any event command) to get a practice question
 3. Click **Check answer** to verify your response
 4. Click **Explain question** to get an AI-powered explanation
@@ -53,7 +53,7 @@ All events include subtopic filtering and difficulty selection:
 - **Clean Architecture** - Modular, maintainable codebase with shared utilities
 - **Error Handling** - Comprehensive error handling with user-friendly messages
 - **Rate Limiting** - Built-in protection against API rate limits
-- **Modern Discord.js** - Uses latest Discord.js features like modals and buttons
+- **Modern Discord.js** - Uses the latest Discord.js features like modals and buttons
 
 ## Version History
 
