@@ -149,17 +149,10 @@ async function fetchQuestion(eventName, options = {}) {
     limit
   });
 
-  console.log(`[DEBUG] fetchQuestion called with:`, { eventName, options });
-  console.log(`[DEBUG] API call params:`, params);
   const response = await axios.get(`${PRIMARY_BASE}/api/questions`, {
     params,
     timeout: 15000,
     headers: AUTH_HEADERS
-  });
-  console.log(`[DEBUG] API response:`, { 
-    success: response.data?.success, 
-    dataLength: response.data?.data?.length,
-    data: response.data?.data 
   });
 
   if (!response.data?.success) {
@@ -170,7 +163,6 @@ async function fetchQuestion(eventName, options = {}) {
   
   // If no question found and subtopic was specified, try without subtopic
   if (!question && subtopic) {
-    console.log(`[DEBUG] No questions found with subtopic '${subtopic}', trying without subtopic...`);
     const fallbackParams = prune({
       event: eventName,
       division,
