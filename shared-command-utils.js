@@ -469,18 +469,30 @@ function createSciOlyCommand(config) {
 
         // Handle ID questions using shared logic
         if (questionType === 'id') {
-          const result = await handleIDQuestionLogic(
-            eventName, questionType, division, subtopic,
-            difficulty?.min, difficulty?.max, AUTH_HEADERS
-          );
-          
-          if (!result.question) {
-            await interaction.editReply('No identification questions found for your filters. Try different filters.');
-            return;
+          try {
+            const result = await handleIDQuestionLogic(
+              eventName, questionType, division, subtopic,
+              difficulty?.min, difficulty?.max, AUTH_HEADERS
+            );
+            
+            if (!result.question) {
+              await interaction.editReply('No identification questions found for your filters. Try different filters.');
+              return;
+            }
+            
+            question = result.question;
+            isID = result.isID;
+          } catch (error) {
+            // If ID questions aren't supported for this event, fall back to regular questions
+            question = await fetchQuestion(eventName, {
+              division,
+              subtopic,
+              questionType: 'mcq', // Default to MCQ if ID not supported
+              difficultyMin: difficulty?.min,
+              difficultyMax: difficulty?.max
+            });
+            isID = false;
           }
-          
-          question = result.question;
-          isID = result.isID;
         } else {
           // Handle regular questions
           question = await fetchQuestion(eventName, {
