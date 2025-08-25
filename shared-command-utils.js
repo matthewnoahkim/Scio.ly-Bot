@@ -427,28 +427,28 @@ function createSciOlyCommand(config) {
       .setName(commandName)
       .setDescription(`Get a ${eventName} question`)
       .addStringOption(option =>
-        option.setName('division')
-          .setDescription('Division')
-          .setRequired(false)
-          .addChoices(...divisions.map(d => ({ name: `Division ${d}`, value: d })))
-      )
-      .addStringOption(option =>
-        option.setName('subtopic')
-          .setDescription('Subtopic')
-          .setRequired(false)
-          .addChoices(...allowedSubtopics.map(s => ({ name: s, value: s })))
-      )
-      .addStringOption(option =>
         option.setName('question_type')
           .setDescription('Question type')
           .setRequired(false)
           .addChoices(...buildQuestionTypeChoices(allowImages))
       )
       .addStringOption(option =>
+        option.setName('division')
+          .setDescription('Division')
+          .setRequired(false)
+          .addChoices(...divisions.map(d => ({ name: `Division ${d}`, value: d })))
+      )
+      .addStringOption(option =>
         option.setName('difficulty')
           .setDescription('Difficulty')
           .setRequired(false)
           .addChoices(...Object.keys(DIFFICULTY_MAP).map(d => ({ name: d, value: d })))
+      )
+      .addStringOption(option =>
+        option.setName('subtopic')
+          .setDescription('Subtopic')
+          .setRequired(false)
+          .addChoices(...allowedSubtopics.map(s => ({ name: s, value: s })))
       ),
 
     async execute(interaction) {
