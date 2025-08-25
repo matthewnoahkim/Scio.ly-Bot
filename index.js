@@ -2,7 +2,13 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client, Collection, GatewayIntentBits } = require('discord.js');
-const token = process.env.BOT_TOKEN || require('./.env').BOT_TOKEN;
+
+// Get bot token from environment variables
+const token = process.env.BOT_TOKEN;
+if (!token) {
+  console.error('ERROR: BOT_TOKEN not found in environment variables');
+  process.exit(1);
+}
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 

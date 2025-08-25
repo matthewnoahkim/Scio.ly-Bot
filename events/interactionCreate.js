@@ -15,11 +15,18 @@ module.exports = {
 		try {
 			await command.execute(interaction);
 		} catch (error) {
-			console.error(error);
-			if (interaction.replied || interaction.deferred) {
-				await interaction.followUp({ content: 'There was an error while executing this command!', flags: MessageFlags.Ephemeral });
-			} else {
-				await interaction.reply({ content: 'There was an error while executing this command!', flags: MessageFlags.Ephemeral });
+			console.error(`ERROR executing ${interaction.commandName}:`, error);
+			
+			const errorMessage = 'Something went wrong while executing this command. Please try again later.';
+			
+			try {
+				if (interaction.replied || interaction.deferred) {
+					await interaction.followUp({ content: errorMessage, flags: MessageFlags.Ephemeral });
+				} else {
+					await interaction.reply({ content: errorMessage, flags: MessageFlags.Ephemeral });
+				}
+			} catch (replyError) {
+				console.error('ERROR: Failed to send error message:', replyError);
 			}
 		}
 	},

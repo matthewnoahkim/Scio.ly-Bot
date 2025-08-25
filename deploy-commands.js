@@ -1,9 +1,16 @@
-const { REST, Routes } = require('discord.js');
 require('dotenv').config();
-const clientId = process.env.CLIENT_ID || require('./config.json').clientId;
-const token = process.env.BOT_TOKEN || require('./config.json').token;
+const { REST, Routes } = require('discord.js');
 const fs = require('node:fs');
 const path = require('node:path');
+
+// Get required environment variables
+const clientId = process.env.CLIENT_ID;
+const token = process.env.BOT_TOKEN;
+
+if (!clientId || !token) {
+  console.error('ERROR: Missing required environment variables: CLIENT_ID and BOT_TOKEN');
+  process.exit(1);
+}
 
 const commands = [];
 const foldersPath = path.join(__dirname, 'commands');

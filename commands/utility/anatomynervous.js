@@ -289,7 +289,7 @@ module.exports = {
 
               const res = new EmbedBuilder()
                 .setColor(correct ? COLOR_GREEN : COLOR_RED)
-                .setTitle(correct ? '✅ Correct!' : '❌ Wrong.')
+                .setTitle(correct ? 'Correct!' : 'Wrong.')
                 .addFields(
                   { name:'Your answer', value:`**${letterFromIndex(idx)})** ${opts[idx]}`, inline:true },
                   { name:'Correct answer', value:`**${letterFromIndex(cIdx)})** ${opts[cIdx]}`, inline:true },
@@ -320,7 +320,7 @@ module.exports = {
 
                 const res = new EmbedBuilder()
                   .setColor(isCorrect ? COLOR_GREEN : COLOR_RED)
-                  .setTitle(isCorrect ? '✅ Correct!' : '❌ Wrong.')
+                  .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
                   .addFields(
                     { name:'Your answer', value: userAnswer.slice(0, 1024) || '—', inline:false },
                     { name:'Expected answer', value: expected || '—', inline:false },
