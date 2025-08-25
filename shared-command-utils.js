@@ -6,9 +6,11 @@ const {
   ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  ComponentType
 } = require('discord.js');
 const { letterFromIndex, getExplanationWithRetry } = require('./shared-utils');
+const { getDivisions, buildQuestionTypeChoices, handleIDQuestionLogic } = require('./shared-id-utils');
 
 // Constants
 const PRIMARY_BASE = 'https://scio.ly';
@@ -268,10 +270,298 @@ function createAnswerModal(questionId, isMCQ) {
   return modal;
 }
 
+/**
+ * Get user-friendly grading error message
+ */
+function getGradingErrorMessage(error) {
+  if (error?.response?.status === 429) {
+    return 'The grading service is rate-limited right now. Please try again in a moment.';
+  }
+  if (error?.response?.status === 401 || error?.response?.status === 403) {
+    return 'Authentication failed for grading. Check your API key.';
+  }
+  if (error?.response?.status) {
+    return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  }
+  return `Grading failed: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+}
+
+/**
+ * Get user-friendly explanation error message
+ */
+function getExplanationErrorMessage(error) {
+  if (error?.response?.status === 429) {
+    return 'The explanation service is rate-limited right now. Please try again in a moment.';
+  }
+  if (error?.response?.status === 401 || error?.response?.status === 403) {
+    return 'Authentication failed for explanation. Check your API key.';
+  }
+  if (error?.response?.status) {
+    return `Could not fetch an explanation: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  }
+  return `Could not fetch an explanation: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+}
+
+// Difficulty mapping used by all commands
+const DIFFICULTY_MAP = {
+  'Very Easy (0-19%)': { min: 0, max: 0.19 },
+  'Easy (20-39%)': { min: 0.2, max: 0.39 },
+  'Medium (40-59%)': { min: 0.4, max: 0.59 },
+  'Hard (60-79%)': { min: 0.6, max: 0.79 },
+  'Very Hard (80-100%)': { min: 0.8, max: 1 }
+};
+
+/**
+ * Handle check answer interaction
+ */
+async function handleCheckAnswerInteraction(interaction, question) {
+  const isMCQ = Array.isArray(question.options) && question.options.length > 0;
+  const modal = createAnswerModal(interaction.message.id, isMCQ);
+  
+  await interaction.showModal(modal);
+
+  try {
+    const modalSubmit = await interaction.awaitModalSubmit({
+      time: 5 * 60 * 1000, // 5 minutes
+      filter: i => i.customId === modal.data.custom_id && i.user.id === interaction.user.id
+    });
+
+    const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
+
+    if (isMCQ) {
+      const result = handleMCQCheck(question, userAnswer);
+      if (result.error) {
+        await modalSubmit.reply(result.error);
+        return;
+      }
+      await modalSubmit.reply({ embeds: [result.embed] });
+    } else {
+      try {
+        const result = await handleFRQGrading(question, userAnswer);
+        await modalSubmit.reply({ embeds: [result.embed] });
+      } catch (error) {
+        const errorMessage = getGradingErrorMessage(error);
+        await modalSubmit.reply(errorMessage);
+      }
+    }
+  } catch (error) {
+    // Modal timeout or other error - user will see modal disappear
+  }
+}
+
+/**
+ * Handle explain question interaction
+ */
+async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
+  await interaction.deferReply();
+
+  try {
+    const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
+    const text = explanation || 'No explanation available.';
+
+    const embed = {
+      color: COLORS.BLUE,
+      title: 'Explanation'
+    };
+
+    if (text.length <= 4096) {
+      embed.description = text;
+      await interaction.editReply({ embeds: [embed] });
+    } else {
+      embed.description = 'The full explanation is attached as a file below.';
+      await interaction.editReply({
+        embeds: [embed],
+        files: [{
+          attachment: Buffer.from(text, 'utf-8'),
+          name: 'explanation.txt'
+        }]
+      });
+    }
+  } catch (error) {
+    const errorMessage = getExplanationErrorMessage(error);
+    await interaction.editReply(errorMessage);
+  }
+}
+
+/**
+ * Handle image processing for ID questions
+ */
+async function handleQuestionImages(question, embed, allowImages, isID) {
+  const files = [];
+  
+  if (allowImages && isID && question.images?.length > 0) {
+    const imageUrl = question.images[0];
+    try {
+      const imageResponse = await axios.get(imageUrl, { 
+        responseType: 'arraybuffer', 
+        timeout: 10000 
+      });
+      const buffer = Buffer.from(imageResponse.data);
+      const filename = `image_${Date.now()}.jpg`;
+      files.push({ attachment: buffer, name: filename });
+      embed.setImage(`attachment://${filename}`);
+    } catch {
+      embed.setImage(imageUrl);
+    }
+  }
+  
+  return files;
+}
+
+/**
+ * Create a universal Science Olympiad command
+ */
+function createSciOlyCommand(config) {
+  const {
+    commandName,
+    eventName,
+    divisions,
+    allowedSubtopics,
+    allowImages = false
+  } = config;
+
+  const { SlashCommandBuilder } = require('discord.js');
+
+  return {
+    data: new SlashCommandBuilder()
+      .setName(commandName)
+      .setDescription(`Get a ${eventName} question`)
+      .addStringOption(option =>
+        option.setName('division')
+          .setDescription('Division')
+          .setRequired(false)
+          .addChoices(...divisions.map(d => ({ name: `Division ${d}`, value: d })))
+      )
+      .addStringOption(option =>
+        option.setName('subtopic')
+          .setDescription('Subtopic')
+          .setRequired(false)
+          .addChoices(...allowedSubtopics.map(s => ({ name: s, value: s })))
+      )
+      .addStringOption(option =>
+        option.setName('question_type')
+          .setDescription('Question type')
+          .setRequired(false)
+          .addChoices(...buildQuestionTypeChoices(allowImages))
+      )
+      .addStringOption(option =>
+        option.setName('difficulty')
+          .setDescription('Difficulty')
+          .setRequired(false)
+          .addChoices(...Object.keys(DIFFICULTY_MAP).map(d => ({ name: d, value: d })))
+      ),
+
+    async execute(interaction) {
+      try {
+        await interaction.deferReply();
+
+        // Parse options
+        const division = interaction.options.getString('division') || divisions[0];
+        const subtopic = interaction.options.getString('subtopic') || 
+          allowedSubtopics[Math.floor(Math.random() * allowedSubtopics.length)];
+        const questionType = interaction.options.getString('question_type');
+        const difficultyLevel = interaction.options.getString('difficulty');
+        
+        const difficulty = difficultyLevel ? DIFFICULTY_MAP[difficultyLevel] : null;
+
+        let question;
+        let isID = false;
+
+        // Handle ID questions using shared logic
+        if (questionType === 'id') {
+          const result = await handleIDQuestionLogic(
+            eventName, questionType, division, subtopic,
+            difficulty?.min, difficulty?.max, AUTH_HEADERS
+          );
+          
+          if (!result.question) {
+            await interaction.editReply('No identification questions found for your filters. Try different filters.');
+            return;
+          }
+          
+          question = result.question;
+          isID = result.isID;
+        } else {
+          // Handle regular questions
+          question = await fetchQuestion(eventName, {
+            division,
+            subtopic,
+            questionType,
+            difficultyMin: difficulty?.min,
+            difficultyMax: difficulty?.max
+          });
+        }
+
+        if (!question?.question) {
+          await interaction.editReply('Question data is incomplete. Please try again.');
+          return;
+        }
+
+        // Build and send response
+        const embed = buildQuestionEmbed(question, eventName, allowImages);
+        const files = await handleQuestionImages(question, embed, allowImages, isID);
+        const components = [createQuestionButtons(question.id || interaction.id)];
+        
+        const sent = await interaction.editReply({ 
+          embeds: [embed], 
+          components,
+          ...(files.length > 0 && { files })
+        });
+
+        // Handle button interactions
+        const collector = sent.createMessageComponentCollector({
+          componentType: ComponentType.Button,
+          time: 30 * 60 * 1000, // 30 minutes
+          filter: i => i.message.id === sent.id
+        });
+
+        collector.on('collect', async (buttonInteraction) => {
+          try {
+            // Check if user is authorized
+            if (buttonInteraction.user.id !== interaction.user.id) {
+              await buttonInteraction.reply({
+                content: 'Only the original requester can use these buttons.',
+                ephemeral: true
+              });
+              return;
+            }
+
+            const questionId = question.id || interaction.id;
+
+            if (buttonInteraction.customId === `check_${questionId}`) {
+              await handleCheckAnswerInteraction(buttonInteraction, question);
+            } else if (buttonInteraction.customId === `explain_${questionId}`) {
+              await handleExplainQuestionInteraction(buttonInteraction, question, eventName, commandName);
+            }
+          } catch (error) {
+            console.error('Button interaction error:', error);
+            try {
+              if (!buttonInteraction.replied && !buttonInteraction.deferred) {
+                await buttonInteraction.reply('Something went wrong handling that action.');
+              }
+            } catch (replyError) {
+              console.error('Failed to send error reply:', replyError);
+            }
+          }
+        });
+
+      } catch (error) {
+        console.error(`${commandName} command error:`, error);
+        const errorMessage = error.message.includes('rate limit') 
+          ? 'Rate limit exceeded. Please try again in a few moments.'
+          : 'Command failed. Please try again later.';
+        
+        await interaction.editReply(errorMessage);
+      }
+    }
+  };
+}
+
 module.exports = {
   COLORS,
   AUTH_HEADERS,
   PRIMARY_BASE,
+  DIFFICULTY_MAP,
   prune,
   resolveCorrectIndex,
   buildQuestionEmbed,
@@ -282,5 +572,11 @@ module.exports = {
   handleFRQGrading,
   createAnswerModal,
   letterFromIndex,
-  getExplanationWithRetry
+  getExplanationWithRetry,
+  getGradingErrorMessage,
+  getExplanationErrorMessage,
+  handleCheckAnswerInteraction,
+  handleExplainQuestionInteraction,
+  handleQuestionImages,
+  createSciOlyCommand
 };
