@@ -15,6 +15,6 @@ module.exports = {
         status: "online"
       });
       i = (i + 1) % statuses.length;
-    }, 3900);
+    }, 2900);
   }
 };
