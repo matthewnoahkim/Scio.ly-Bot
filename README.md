@@ -8,7 +8,7 @@
 
 ## Features
 
-- **18 Science Olympiad Events** - Access thousands of practice questions
+- **17 Science Olympiad Events** - Access thousands of practice questions
 - **AI-Powered Explanations** - Get detailed explanations via scio.ly's Gemini integration
 - **Smart Answer Checking** - Automatic grading for both MCQ and FRQ questions
 - **Image Support** - Full support for identification events with images
@@ -24,7 +24,7 @@
 
 ## Supported Events
 
-### Division C
+### Division B & C
 All events include subtopic filtering and difficulty selection:
 
 - Anatomy & Physiology (Endocrine, Nervous, Sense Organs)
