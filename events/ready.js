@@ -1,7 +1,6 @@
-const { Events, ActivityType } = require('discord.js');
+const { Events } = require('discord.js');
 
-const bubbles = ['I', '❤️', 'SciOly!'];
-const INTERVAL_MS = 1000;
+const statuses = ["I", "❤️", "scio.ly"];
 
 module.exports = {
   name: Events.ClientReady,
@@ -9,21 +8,13 @@ module.exports = {
   execute(client) {
     console.log(`${client.user.tag} is ready! Serving ${client.guilds.cache.size} servers.`);
 
-    client.user.setPresence({
-      activities: [{ name: 'scio.ly', type: ActivityType.Playing }],
-      status: 'online'
-    });
-
     let i = 0;
     setInterval(() => {
       client.user.setPresence({
-        activities: [{ name: 'scio.ly', type: ActivityType.Playing }],
-        status: 'online',
-        afk: false,
+        activities: [{ name: statuses[i], type: 4 }], // type: 4 = Custom Status
+        status: "online"
       });
-
-      client.user.setActivity(bubbles[i], { type: ActivityType.Custom });
-      i = (i + 1) % bubbles.length;
-    }, INTERVAL_MS);
-  },
+      i = (i + 1) % statuses.length;
+    }, 400);
+  }
 };
