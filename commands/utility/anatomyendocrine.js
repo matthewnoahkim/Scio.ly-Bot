@@ -7,8 +7,8 @@ const { letterFromIndex, getExplanationWithRetry } = require('../../shared-utils
 
 const COMMAND_NAME = 'anatomyendocrine';
 const EVENT_NAME = 'Anatomy - Endocrine';
-const DIVISIONS = ['B'];
-const ALLOWED_SUBTOPICS = ["Hormones","Glands","Regulation","Pathology","Oxytocin","Posterior Pituitary","Hormone Secretion","Reproduction","unknown","Development","Immune","Anatomy - Endocrine"];
+const DIVISIONS = ['B','C'];
+const ALLOWED_SUBTOPICS = ['Hormones', 'Glands', 'Regulation', 'Feedback', 'Development'];
 const ALLOW_IMAGES = true;
 
 const PRIMARY_BASE = 'https://scio.ly';
@@ -164,8 +164,8 @@ module.exports = {
                 );
                 await sub.reply({embeds:[res]});
               }catch(err){
-                if(err?.response?.status===429) await sub.reply('⏳ The grading service is rate-limited right now. Please try again in a moment.');
-                else if(err?.response?.status===401||err?.response?.status===403) await sub.reply('🔒 Authentication failed for grading. Check your API key.');
+                if(err?.response?.status===429) await sub.reply('The grading service is rate-limited right now. Please try again in a moment.');
+                else if(err?.response?.status===401||err?.response?.status===403) await sub.reply('Authentication failed for grading. Check your API key.');
                 else if(err?.response?.status) await sub.reply(`Grading failed: HTTP ${err.response.status} - ${err.response.statusText||'Unknown error'}. Please try again shortly.`);
                 else await sub.reply(`Grading failed: ${err?.message||'Network or connection error'}. Please try again shortly.`);
               }
@@ -175,12 +175,12 @@ module.exports = {
             try{
               const explanation = await getExplanationWithRetry(q, EVENT_NAME, AUTH_HEADERS, COMMAND_NAME);
               const text = explanation || 'No explanation available.';
-              const e=new EmbedBuilder().setColor(COLOR_BLUE).setTitle('📘 Explanation');
+              const e=new EmbedBuilder().setColor(COLOR_BLUE).setTitle('Explanation');
               if(text.length<=4096){ e.setDescription(text); await btn.editReply({embeds:[e]}); }
               else { e.setDescription('The full explanation is attached as a file below.'); await btn.editReply({embeds:[e], files:[{attachment:Buffer.from(text,'utf-8'), name:'explanation.txt'}]}); }
             }catch(err){
-              if(err?.response?.status===429) await btn.editReply('⏳ The explanation service is rate-limited right now. Please try again in a moment.');
-              else if(err?.response?.status===401||err?.response?.status===403) await btn.editReply('🔒 Authentication failed for explanation. Check your API key.');
+              if(err?.response?.status===429) await btn.editReply('The explanation service is rate-limited right now. Please try again in a moment.');
+              else if(err?.response?.status===401||err?.response?.status===403) await btn.editReply('Authentication failed for explanation. Check your API key.');
               else if(err?.response?.status) await btn.editReply(`Could not fetch an explanation: HTTP ${err.response.status} - ${err.response.statusText||'Unknown error'}. Please try again shortly.`);
               else await btn.editReply(`Could not fetch an explanation: ${err?.message||'Network or connection error'}. Please try again shortly.`);
             }
