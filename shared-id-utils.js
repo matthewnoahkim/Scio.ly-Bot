@@ -21,12 +21,12 @@ function getDivisions(eventName) {
 
 function buildQuestionTypeChoices(allowImages) {
   const choices = [
-    { name: 'Multiple Choice', value: 'MCQ' },
-    { name: 'Free Response', value: 'FRQ' }
+    { name: 'MCQ', value: 'mcq' },
+    { name: 'FRQ', value: 'frq' }
   ];
   
   if (allowImages) {
-    choices.push({ name: 'Identification (ID)', value: 'ID' });
+    choices.push({ name: 'ID', value: 'id' });
   }
   
   return choices;
@@ -34,7 +34,7 @@ function buildQuestionTypeChoices(allowImages) {
 
 async function handleIDQuestionLogic(eventName, questionType, division, subtopic, minDifficulty, maxDifficulty, authHeaders) {
   // If question type is ID, use ID API
-  if (questionType === 'ID') {
+  if (questionType === 'ID' || questionType === 'id') {
     try {
       const config = ID_EVENT_CONFIGS[eventName];
       if (!config) {
@@ -64,8 +64,6 @@ async function handleIDQuestionLogic(eventName, questionType, division, subtopic
         params.difficulty_max = maxDifficulty;
       }
 
-      console.log(`[DEBUG] ID API call params:`, params);
-
       // Fetch ID question
       const response = await axios.get('https://scio.ly/api/id-questions', {
         params,
@@ -73,12 +71,9 @@ async function handleIDQuestionLogic(eventName, questionType, division, subtopic
         headers: authHeaders
       });
 
-      console.log(`[DEBUG] ID API response:`, response.data);
-
       if (!response.data?.success || !response.data.data?.length) {
         // If no results with subtopic, try without subtopic
         if (subtopic) {
-          console.log(`[DEBUG] No ID questions found with subtopic '${subtopic}', trying without subtopic...`);
           delete params.subtopic;
           
           const fallbackResponse = await axios.get('https://scio.ly/api/id-questions', {
