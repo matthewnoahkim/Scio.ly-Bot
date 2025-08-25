@@ -57,11 +57,9 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName(COMMAND_NAME)
     .setDescription(`Get a ${EVENT_NAME} question`)
+    .addStringOption(o=>o.setName('question_type').setDescription('Question type').setRequired(false).addChoices({name:'MCQ', value:'mcq'}, {name:'FRQ', value:'frq'}, {name:'ID', value:'id'}))
     .addStringOption(option =>
       option.setName('division').setDescription('Division').addChoices(...DIVISIONS.map(d => ({ name: `Division ${d}`, value: d }))))
-    .addStringOption(option =>
-      option.setName('subtopic').setDescription('Subtopic').addChoices(...ALLOWED_SUBTOPICS.map(s => ({ name: s, value: s }))))
-    .addStringOption(o=>o.setName('question_type').setDescription('Question type').setRequired(false).addChoices({name:'MCQ', value:'mcq'}, {name:'FRQ', value:'frq'}, {name:'ID', value:'id'}))
     .addStringOption(option =>
       option.setName('difficulty').setDescription('Difficulty').addChoices(
         { name: 'Very Easy (0-19%)', value: 'Very Easy (0-19%)' },
@@ -70,7 +68,9 @@ module.exports = {
         { name: 'Hard (60-79%)', value: 'Hard (60-79%)' },
         { name: 'Very Hard (80-100%)', value: 'Very Hard (80-100%)' }
       )
-    ),
+    )
+    .addStringOption(option =>
+      option.setName('subtopic').setDescription('Subtopic').addChoices(...ALLOWED_SUBTOPICS.map(s => ({ name: s, value: s })))),
 
   async execute(interaction){
     try{
