@@ -148,15 +148,11 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
   // Build the question text once to ensure consistency  
   const fullQuestionText = buildFullQuestionText(question);
   
-  // Use scio.ly API for explanations
-  console.log(`[${logPrefix}] Using scio.ly API for explanations`);
   let retryCount = 0;
   const maxRetries = 3;
   
   while (retryCount <= maxRetries) {
     try {
-      console.log(`[${logPrefix}] scio.ly API attempt ${retryCount + 1}/${maxRetries + 1}`);
-      
       // Use the new scio.ly explain format matching the curl example
       const explanation = await callGeminiThroughScioLy(question, eventName, null, authHeaders, logPrefix);
       
@@ -173,29 +169,19 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
         const explanationLower = explanation.toLowerCase();
         const matchingKeywords = questionKeywords.filter(keyword => explanationLower.includes(keyword));
         
-        console.log(`[${logPrefix}] Question keywords from actual question:`, questionKeywords.slice(0, 10));
-        console.log(`[${logPrefix}] Matching keywords in explanation:`, matchingKeywords.slice(0, 10));
-        console.log(`[${logPrefix}] Keyword match percentage: ${questionKeywords.length > 0 ? (matchingKeywords.length / questionKeywords.length * 100).toFixed(1) : 'N/A'}%`);
-        
         // Very lenient threshold - only reject if less than 5% keyword match
         const keywordMatchPercentage = questionKeywords.length > 0 ? (matchingKeywords.length / questionKeywords.length) : 1;
         if (questionKeywords.length > 0 && keywordMatchPercentage < 0.05 && actualQuestionText.length > 20) {
-          console.log(`[${logPrefix}] WARNING: Very low keyword match (${(keywordMatchPercentage * 100).toFixed(1)}%), may be unrelated explanation`);
           if (retryCount < maxRetries) {
-            console.log(`[${logPrefix}] Will retry due to potential mismatch...`);
             await new Promise(resolve => setTimeout(resolve, 2000 * (retryCount + 1)));
             retryCount++;
             continue;
-          } else {
-            console.log(`[${logPrefix}] All retries exhausted, but returning explanation anyway`);
           }
         }
         
-        console.log(`[${logPrefix}] Valid explanation received, breaking retry loop`);
         return explanation;
         
       } else if (retryCount < maxRetries) {
-        console.log(`[${logPrefix}] Received error message or insufficient response, will retry...`);
         await new Promise(resolve => setTimeout(resolve, 1500 * (retryCount + 1)));
         retryCount++;
         continue;
@@ -203,7 +189,6 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
       
       break;
     } catch (primaryErr) {
-      console.log(`[${logPrefix}] scio.ly API attempt ${retryCount + 1} failed:`, primaryErr?.response?.status, primaryErr?.response?.data);
       if (retryCount < maxRetries) {
         retryCount++;
         await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
@@ -211,7 +196,6 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
       }
       
       // If all retries failed, try fallback API with legacy format
-      console.log(`[${logPrefix}] All scio.ly API retries failed, trying fallback...`);
       try {
         const tutorPrompt = buildTutorPrompt(fullQuestionText, eventName);
         const fallbackRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
@@ -219,12 +203,11 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
           event: eventName,
           streaming: false
         }, { headers: authHeaders });
-        console.log(`[${logPrefix}] Fallback explanation API success`);
         
         const explanation = extractExplanation(fallbackRes.data) || 'No explanation was returned.';
         return explanation;
       } catch (fallbackErr) {
-        console.log(`[${logPrefix}] Fallback explanation API also failed:`, fallbackErr?.response?.status, fallbackErr?.response?.data);
+        console.error(`[${logPrefix}] All explanation APIs failed:`, fallbackErr?.response?.status, fallbackErr?.message);
         throw fallbackErr;
       }
     }
