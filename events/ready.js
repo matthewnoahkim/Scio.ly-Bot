@@ -1,7 +1,7 @@
 const { Events, ActivityType } = require('discord.js');
 
-const pulses = ['I', '❤️', 'SciOly!'];
-const INTERVAL_MS = 1000; // 1s — note: frequent updates may hit rate limits
+const bubbles = ['I', '❤️', 'SciOly!'];
+const INTERVAL_MS = 1000;
 
 module.exports = {
   name: Events.ClientReady,
@@ -9,16 +9,21 @@ module.exports = {
   execute(client) {
     console.log(`${client.user.tag} is ready! Serving ${client.guilds.cache.size} servers.`);
 
-    let i = 0;
-    const updatePresence = () => {
-      const suffix = pulses[i];
-      client.user
-        .setActivity(`scio.ly — ${suffix}`, { type: ActivityType.Playing })
-        .catch(console.error);
-      i = (i + 1) % pulses.length;
-    };
+    client.user.setPresence({
+      activities: [{ name: 'scio.ly', type: ActivityType.Playing }],
+      status: 'online'
+    });
 
-    updatePresence();                  // initial: "Playing scio.ly — I"
-    setInterval(updatePresence, INTERVAL_MS);
+    let i = 0;
+    setInterval(() => {
+      client.user.setPresence({
+        activities: [{ name: 'scio.ly', type: ActivityType.Playing }],
+        status: 'online',
+        afk: false,
+      });
+
+      client.user.setActivity(bubbles[i], { type: ActivityType.Custom });
+      i = (i + 1) % bubbles.length;
+    }, INTERVAL_MS);
   },
 };
