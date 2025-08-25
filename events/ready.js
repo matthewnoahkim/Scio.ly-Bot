@@ -1,6 +1,6 @@
 const { Events } = require('discord.js');
 
-const statuses = ["I", "❤️", "scio.ly"];
+const statuses = ["I", "❤️", "scio.ly!"];
 
 module.exports = {
   name: Events.ClientReady,
@@ -15,6 +15,6 @@ module.exports = {
         status: "online"
       });
       i = (i + 1) % statuses.length;
-    }, 400);
+    }, 1000);
   }
 };
