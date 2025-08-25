@@ -1,3 +1,6 @@
+// Ensure environment variables are loaded
+require('dotenv').config();
+
 const axios = require('axios');
 const {
   EmbedBuilder, 
@@ -23,6 +26,9 @@ const {
 // Constants
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
+
+
+
 const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` } : {};
 const COLORS = {
   BLUE: 0x2b90d9,
@@ -236,13 +242,66 @@ function handleMCQCheck(question, userAnswer) {
 }
 
 /**
- * Handle FRQ answer grading
+ * Handle FRQ answer grading using Gemini AI through scio.ly API
+ * 
+ * This function leverages Google's Gemini AI to intelligently grade free-response
+ * questions by comparing the user's answer against the expected answer(s).
+ * 
+ * Features:
+ * - AI-powered answer comparison and scoring
+ * - Confidence scoring for grading accuracy
+ * - Detailed feedback and explanations
+ * - Enhanced error handling for various failure scenarios
+ * 
+ * @param {Object} question - The question object containing question text and expected answers
+ * @param {string} userAnswer - The user's submitted answer
+ * @returns {Object} Object containing embed, correctness, score, feedback, and confidence
  */
 async function handleFRQGrading(question, userAnswer) {
-  const correctAnswers = Array.isArray(question.answers) 
-    ? question.answers.map(String) 
-    : (typeof question.answers === 'string' ? [question.answers] : []);
+  // Debug: Log the question object structure
+  console.log('=== FRQ Grading Debug ===');
+  console.log('Question object keys:', Object.keys(question));
+  console.log('Question text:', question.question);
+  console.log('Question answers field:', question.answers);
+  console.log('Question answer field (singular):', question.answer);
+  console.log('Question correct_answer field:', question.correct_answer);
+  console.log('Question correct_answers field:', question.correct_answers);
+  console.log('Question solution field:', question.solution);
+  console.log('Question solutions field:', question.solutions);
+  console.log('Full question object:', JSON.stringify(question, null, 2));
+  
+  // Try multiple possible answer field names
+  let correctAnswers = [];
+  
+  if (Array.isArray(question.answers)) {
+    correctAnswers = question.answers.map(String);
+  } else if (typeof question.answers === 'string') {
+    correctAnswers = [question.answers];
+  } else if (Array.isArray(question.answer)) {
+    correctAnswers = question.answer.map(String);
+  } else if (typeof question.answer === 'string') {
+    correctAnswers = [question.answer];
+  } else if (Array.isArray(question.correct_answer)) {
+    correctAnswers = question.correct_answer.map(String);
+  } else if (typeof question.correct_answer === 'string') {
+    correctAnswers = [question.correct_answer];
+  } else if (Array.isArray(question.correct_answers)) {
+    correctAnswers = question.correct_answers.map(String);
+  } else if (typeof question.correct_answers === 'string') {
+    correctAnswers = [question.correct_answers];
+  } else if (Array.isArray(question.solution)) {
+    correctAnswers = question.solution.map(String);
+  } else if (typeof question.solution === 'string') {
+    correctAnswers = [question.solution];
+  } else if (Array.isArray(question.solutions)) {
+    correctAnswers = question.solutions.map(String);
+  } else if (typeof question.solutions === 'string') {
+    correctAnswers = [question.solutions];
+  }
+  
+  console.log('Extracted correct answers:', correctAnswers);
 
+  // Prepare the request for Gemini grading
   const requestBody = {
     responses: [{
       question: question.question,
@@ -251,35 +310,214 @@ async function handleFRQGrading(question, userAnswer) {
     }]
   };
 
-  const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
-    headers: AUTH_HEADERS
-  });
+  try {
+    // Call Gemini grading API through scio.ly
+    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
+      headers: AUTH_HEADERS,
+      timeout: 30000 // 30 second timeout for AI grading
+    });
 
-  const grade = response.data?.data?.grades?.[0];
-  let score = null;
+    // Extract grading results from Gemini API response
+    const grade = response.data?.data?.grades?.[0];
+    let score = null;
+    let feedback = null;
+    let confidence = null;
 
-  if (grade && typeof grade.score === 'number') {
-    score = grade.score;
-  } else if (response.data?.data?.scores?.[0] != null) {
-    score = response.data.data.scores[0];
-  } else {
-    throw new Error('Grading service did not return a result');
+    // Parse the score from different possible response formats
+    if (grade && typeof grade.score === 'number') {
+      score = grade.score;
+    } else if (response.data?.data?.scores?.[0] != null) {
+      score = response.data.data.scores[0];
+    } else if (grade && typeof grade.percentage === 'number') {
+      score = grade.percentage / 100;
+    } else {
+      throw new Error('Gemini grading service did not return a valid score');
+    }
+
+    // Extract additional feedback if available
+    if (grade && grade.feedback) {
+      feedback = grade.feedback;
+    } else if (grade && grade.comments) {
+      feedback = grade.comments;
+    }
+
+    // Extract confidence score if available
+    if (grade && typeof grade.confidence === 'number') {
+      confidence = grade.confidence;
+    }
+
+    // Validate score is within valid range
+    if (score < 0 || score > 1) {
+      score = Math.max(0, Math.min(1, score)); // Clamp to 0-1 range
+    }
+
+    const percentageScore = Math.round(score * 100);
+    const isCorrect = percentageScore > 50;
+    
+    // Format the expected answer for display
+    const expectedAnswer = correctAnswers.length 
+      ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+      : '—';
+
+    // Build enhanced embed with Gemini grading results
+    const embed = new EmbedBuilder()
+      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setTitle(isCorrect ? '✅ Correct!' : '❌ Incorrect')
+      .setDescription(`**Gemini AI Grading Results**`)
+      .addFields(
+        { name: 'Your Answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+        { name: 'Expected Answer', value: expectedAnswer || '—', inline: false },
+        { name: 'Gemini Grade', value: `**${percentageScore}%**`, inline: true }
+      );
+
+    // Add confidence score if available
+    if (confidence !== null) {
+      embed.addFields({ 
+        name: 'AI Confidence', 
+        value: `${Math.round(confidence * 100)}%`, 
+        inline: true 
+      });
+    }
+
+    // Add detailed feedback if available
+    if (feedback && feedback.trim()) {
+      const feedbackText = feedback.length > 1024 ? feedback.slice(0, 1021) + '...' : feedback;
+      embed.addFields({ 
+        name: 'AI Feedback', 
+        value: feedbackText, 
+        inline: false 
+      });
+    }
+
+    // Add grading scale explanation
+    const gradeLevel = percentageScore >= 90 ? 'Excellent' : 
+                      percentageScore >= 80 ? 'Good' : 
+                      percentageScore >= 70 ? 'Fair' : 
+                      percentageScore >= 60 ? 'Needs Improvement' : 
+                      'Poor';
+    
+    embed.addFields({ 
+      name: '📈 Grade Level', 
+      value: gradeLevel, 
+      inline: true 
+    });
+
+    // Add footer with grading info
+    embed.setFooter({ 
+      text: `Graded by Gemini AI • Score: ${percentageScore}% • ${isCorrect ? 'Passing' : 'Below Passing'}`
+    });
+
+    return { embed, isCorrect, score, feedback, confidence };
+
+  } catch (error) {
+    console.error('Gemini FRQ grading error:', error);
+    
+    // Try fallback grading if Gemini fails
+    try {
+      const fallbackResult = await handleFallbackGrading(question, userAnswer);
+      return fallbackResult;
+    } catch (fallbackError) {
+      console.error('Fallback grading also failed:', fallbackError);
+      
+      // Enhanced error handling for different types of failures
+      if (error.response?.status === 429) {
+        throw new Error('Gemini grading service is rate-limited. Please try again in a moment.');
+      } else if (error.response?.status === 503 || error.response?.status === 502) {
+        throw new Error('Gemini grading service is temporarily unavailable. Please try again shortly.');
+      } else if (error.response?.status === 401 || error.response?.status === 403) {
+        throw new Error('Authentication failed for Gemini grading service. Please check your API configuration.');
+      } else if (error.code === 'ECONNABORTED') {
+        throw new Error('Gemini grading request timed out. The AI service may be busy.');
+      } else if (error.message.includes('did not return a valid score')) {
+        throw new Error('Gemini grading service returned an invalid response. Please try again.');
+      } else {
+        throw new Error(`Gemini grading failed: ${error.message || 'Unknown error'}. Please try again shortly.`);
+      }
+    }
+  }
+}
+
+/**
+ * Fallback grading function when Gemini API fails
+ * Uses simple keyword matching and length comparison
+ */
+async function handleFallbackGrading(question, userAnswer) {
+  // Use the same answer extraction logic as the main grading function
+  let correctAnswers = [];
+  
+  if (Array.isArray(question.answers)) {
+    correctAnswers = question.answers.map(String);
+  } else if (typeof question.answers === 'string') {
+    correctAnswers = [question.answers];
+  } else if (Array.isArray(question.answer)) {
+    correctAnswers = question.answer.map(String);
+  } else if (typeof question.answer === 'string') {
+    correctAnswers = [question.answer];
+  } else if (Array.isArray(question.correct_answer)) {
+    correctAnswers = question.correct_answer.map(String);
+  } else if (typeof question.correct_answer === 'string') {
+    correctAnswers = [question.correct_answer];
+  } else if (Array.isArray(question.correct_answers)) {
+    correctAnswers = question.correct_answers.map(String);
+  } else if (typeof question.correct_answers === 'string') {
+    correctAnswers = [question.correct_answers];
+  } else if (Array.isArray(question.solution)) {
+    correctAnswers = question.solution.map(String);
+  } else if (typeof question.solution === 'string') {
+    correctAnswers = [question.solution];
+  } else if (Array.isArray(question.solutions)) {
+    correctAnswers = question.solutions.map(String);
+  } else if (typeof question.solutions === 'string') {
+    correctAnswers = [question.solutions];
   }
 
-  const isCorrect = Math.round(score * 100) > 50;
+  // Simple scoring based on answer length and keyword matching
+  let score = 0.5; // Start with 50%
+  
+  if (correctAnswers.length > 0) {
+    const expectedAnswer = correctAnswers[0].toLowerCase();
+    const userAnswerLower = userAnswer.toLowerCase();
+    
+    // Check for keyword matches
+    const expectedWords = expectedAnswer.split(/\s+/).filter(word => word.length > 3);
+    const userWords = userAnswerLower.split(/\s+/).filter(word => word.length > 3);
+    
+    let keywordMatches = 0;
+    expectedWords.forEach(word => {
+      if (userWords.includes(word)) keywordMatches++;
+    });
+    
+    // Calculate score based on keyword matches and length
+    const keywordScore = expectedWords.length > 0 ? keywordMatches / expectedWords.length : 0;
+    const lengthScore = Math.min(userAnswer.length / Math.max(expectedAnswer.length, 50), 1);
+    
+    score = (keywordScore * 0.7) + (lengthScore * 0.3);
+  }
+  
+  // Ensure score is between 0 and 1
+  score = Math.max(0, Math.min(1, score));
+  const percentageScore = Math.round(score * 100);
+  const isCorrect = percentageScore > 50;
+  
   const expectedAnswer = correctAnswers.length 
     ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
     : '—';
 
   const embed = new EmbedBuilder()
     .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-    .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+    .setTitle(isCorrect ? '✅ Correct!' : '❌ Incorrect')
+    .setDescription(`**Fallback Grading Results**\n*Gemini AI was unavailable, using backup system*`)
     .addFields(
-      { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
-      { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
-    );
+      { name: '📝 Your Answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+      { name: '🎯 Expected Answer', value: expectedAnswer || '—', inline: false },
+      { name: '📊 Fallback Grade', value: `**${percentageScore}%**`, inline: true },
+      { name: '⚠️ Note', value: 'This grade was calculated using a backup system. For more accurate AI grading, try again later.', inline: false }
+    )
+    .setFooter({ 
+      text: `Fallback Grading • Score: ${percentageScore}% • ${isCorrect ? 'Passing' : 'Below Passing'}`
+    });
 
-  return { embed, isCorrect, score };
+  return { embed, isCorrect, score, feedback: 'Fallback grading used', confidence: 0.6 };
 }
 
 /**
@@ -302,19 +540,37 @@ function createAnswerModal(questionId, isMCQ) {
 }
 
 /**
- * Get user-friendly grading error message
+ * Get user-friendly grading error message for Gemini AI grading
  */
 function getGradingErrorMessage(error) {
+  // Handle specific Gemini AI grading errors
+  if (error?.message?.includes('Gemini grading service')) {
+    return error.message; // Return the enhanced error message from handleFRQGrading
+  }
+  
+  // Handle HTTP status codes
   if (error?.response?.status === 429) {
-    return 'The grading service is rate-limited right now. Please try again in a moment.';
+    return 'The Gemini AI grading service is rate-limited right now. Please try again in a moment.';
+  }
+  if (error?.response?.status === 503 || error?.response?.status === 502) {
+    return 'The Gemini AI grading service is temporarily unavailable. Please try again shortly.';
   }
   if (error?.response?.status === 401 || error?.response?.status === 403) {
-    return 'Authentication failed for grading. Check your API key.';
+    return 'Authentication failed for Gemini AI grading. Please check your API configuration.';
   }
   if (error?.response?.status) {
-    return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+    return `Gemini AI grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
   }
-  return `Grading failed: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+  
+  // Handle timeout and connection errors
+  if (error?.code === 'ECONNABORTED') {
+    return 'The Gemini AI grading request timed out. The AI service may be busy. Please try again.';
+  }
+  if (error?.code === 'ENOTFOUND' || error?.code === 'ECONNREFUSED') {
+    return 'Cannot connect to the Gemini AI grading service. Please check your internet connection and try again.';
+  }
+  
+  return `Gemini AI grading failed: ${error?.message || 'Unknown error'}. Please try again shortly.`;
 }
 
 /**
@@ -354,7 +610,7 @@ async function handleCheckAnswerInteraction(interaction, question) {
   try {
     const modalSubmit = await interaction.awaitModalSubmit({
       time: 5 * 60 * 1000, // 5 minutes
-      filter: i => i.customId === modal.data.custom_id && i.user.id === interaction.user.id
+      filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
     });
 
     const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
@@ -376,7 +632,22 @@ async function handleCheckAnswerInteraction(interaction, question) {
       }
     }
   } catch (error) {
-    // Modal timeout or other error - user will see modal disappear
+    // Enhanced error handling for modal submission
+    console.error('Modal submission error:', error);
+    
+    // Try to provide user feedback if possible
+    try {
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply('Something went wrong with the modal submission. Please try again.');
+      } else {
+        await interaction.reply({ 
+          content: 'Something went wrong with the modal submission. Please try again.', 
+          ephemeral: true 
+        });
+      }
+    } catch (replyError) {
+      console.error('Failed to send error message to user:', replyError);
+    }
   }
 }
 
@@ -628,6 +899,7 @@ module.exports = {
   fetchQuestion,
   handleMCQCheck,
   handleFRQGrading,
+  handleFallbackGrading,
   createAnswerModal,
   letterFromIndex,
   getExplanationWithRetry,
