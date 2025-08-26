@@ -234,7 +234,7 @@ function handleMCQCheck(question, userAnswer) {
 
   const embed = new EmbedBuilder()
     .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-    .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+    .setTitle(isCorrect ? 'Correct!' : 'Wrong')
     .addFields(
       { name: 'Your answer', value: `**${letterFromIndex(index)})** ${options[index]}`, inline: true },
       { name: 'Correct answer', value: `**${letterFromIndex(correctIndex)})** ${options[correctIndex]}`, inline: true }
@@ -311,14 +311,10 @@ async function handleFRQGrading(question, userAnswer) {
     const embed = new EmbedBuilder()
       .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
       .setTitle(isCorrect ? 'Correct!' : 'Wrong')
-      .setDescription('**AI-Powered Grading Results**')
       .addFields(
         { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
-        { name: 'Expected answer', value: expectedAnswer || '—', inline: false },
-        { name: 'AI Grade', value: `**${Math.round(score * 100)}%**`, inline: true }
-      )
-      .setFooter({ text: `Graded by AI • Score: ${Math.round(score * 100)}%` });
-
+        { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
+      );
     return { embed, isCorrect, score };
 
   } catch (error) {
