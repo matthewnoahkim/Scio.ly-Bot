@@ -310,7 +310,7 @@ async function handleFRQGrading(question, userAnswer) {
 
     const embed = new EmbedBuilder()
       .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+      .setTitle(isCorrect ? 'Correct!' : 'Wrong')
       .setDescription('**AI-Powered Grading Results**')
       .addFields(
         { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
