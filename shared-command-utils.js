@@ -46,23 +46,87 @@ function prune(obj) {
 }
 
 /**
+ * Normalize answer data from API to ensure consistent format
+ */
+function normalizeAnswers(answers) {
+  if (!answers) return [];
+  
+  // Handle single answer
+  if (!Array.isArray(answers)) {
+    answers = [answers];
+  }
+  
+  // Filter out null/undefined and normalize strings
+  return answers
+    .filter(answer => answer != null)
+    .map(answer => {
+      if (typeof answer === 'string') {
+        return answer.trim();
+      }
+      return answer;
+    });
+}
+
+/**
  * Resolve the correct answer index for MCQ questions
  */
 function resolveCorrectIndex(question) {
-  const { options = [], answers = [] } = question || {};
+  const { options = [] } = question || {};
   if (!options.length) return null;
   
-  const firstAnswer = answers?.[0];
-  if (typeof firstAnswer === 'number') {
-    return firstAnswer >= 1 && firstAnswer <= options.length ? firstAnswer - 1 : 
-           (firstAnswer >= 0 && firstAnswer < options.length ? firstAnswer : 0);
+  // Normalize answers to handle various API response formats
+  const normalizedAnswers = normalizeAnswers(question.answers);
+  
+  for (const answer of normalizedAnswers) {
+    if (answer == null) continue;
+    
+    // Handle numeric answers (0-based indices from API)
+    if (typeof answer === 'number') {
+      // The API consistently returns 0-based indices
+      if (answer >= 0 && answer < options.length) {
+        return answer; // Already 0-based
+      }
+    }
+    
+    // Handle string answers (letter or full text)
+    if (typeof answer === 'string') {
+      const trimmed = answer.trim();
+      
+      // Check if it's a single letter (A, B, C, D, etc.)
+      if (trimmed.length === 1) {
+        const letter = trimmed.toUpperCase();
+        const letterIndex = letter.charCodeAt(0) - 65; // A=0, B=1, C=2, etc.
+        if (letterIndex >= 0 && letterIndex < options.length) {
+          return letterIndex;
+        }
+      }
+      
+      // Check if it matches the full option text (case-insensitive)
+      const lowerTrimmed = trimmed.toLowerCase();
+      const index = options.findIndex(opt => {
+        if (opt == null) return false;
+        const optStr = String(opt).trim().toLowerCase();
+        return optStr === lowerTrimmed;
+      });
+      if (index !== -1) return index;
+      
+      // Check for partial matches (in case of slight text differences)
+      const partialIndex = options.findIndex(opt => {
+        if (opt == null) return false;
+        const optStr = String(opt).trim().toLowerCase();
+        return optStr.includes(lowerTrimmed) || lowerTrimmed.includes(optStr);
+      });
+      if (partialIndex !== -1) return partialIndex;
+    }
   }
   
-  if (typeof firstAnswer === 'string') {
-    const trimmed = firstAnswer.trim().toLowerCase();
-    const index = options.findIndex(opt => String(opt).trim().toLowerCase() === trimmed);
-    if (index !== -1) return index;
-  }
+  // If no valid answer found, log for debugging and return 0 as fallback
+  console.warn('Could not resolve correct answer index for question:', {
+    questionId: question.id,
+    originalAnswers: question.answers,
+    normalizedAnswers: normalizedAnswers,
+    options: options
+  });
   
   return 0;
 }
@@ -210,6 +274,22 @@ async function fetchQuestion(eventName, options = {}) {
     }
   }
 
+  // Validate question structure before returning
+  if (question && Array.isArray(question.options) && question.options.length > 0) {
+    // Ensure options are properly formatted
+    question.options = question.options.map(opt => 
+      typeof opt === 'string' ? opt.trim() : String(opt)
+    );
+    
+    // Log if answers are missing or malformed for MCQ questions
+    if (!question.answers || !Array.isArray(question.answers) || question.answers.length === 0) {
+      console.warn('MCQ question missing answers:', {
+        questionId: question.id,
+        options: question.options
+      });
+    }
+  }
+
   return question;
 }
 
@@ -231,6 +311,19 @@ function handleMCQCheck(question, userAnswer) {
 
   const correctIndex = resolveCorrectIndex(question);
   const isCorrect = index === correctIndex;
+
+  // Add debugging information for answer parsing issues
+  if (correctIndex === 0 && question.answers && question.answers.length > 0) {
+    console.log('Answer parsing debug:', {
+      questionId: question.id,
+      userAnswer: userAnswer,
+      userIndex: index,
+      correctIndex: correctIndex,
+      answers: question.answers,
+      options: options,
+      isCorrect: isCorrect
+    });
+  }
 
   const embed = new EmbedBuilder()
     .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
@@ -447,24 +540,23 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
     const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
     const text = explanation || 'No explanation available.';
 
+    // Clean up LaTeX expressions and format text for Discord compatibility
+    const { cleanLatexForDiscord, formatExplanationText } = require('./shared-utils');
+    const cleanedText = cleanLatexForDiscord(text);
+    const formattedText = formatExplanationText(cleanedText);
+
     const embed = {
       color: COLORS.BLUE,
       title: 'Explanation'
     };
 
-    if (text.length <= 4096) {
-      embed.description = text;
-      await interaction.editReply({ embeds: [embed] });
-    } else {
-      embed.description = 'The full explanation is attached as a file below.';
-      await interaction.editReply({
-        embeds: [embed],
-        files: [{
-          attachment: Buffer.from(text, 'utf-8'),
-          name: 'explanation.txt'
-        }]
-      });
-    }
+    // Always truncate to fit in Discord embed (max 4096 characters)
+    const truncatedText = formattedText.length > 4096 
+      ? formattedText.substring(0, 4093) + '...'
+      : formattedText;
+    
+    embed.description = truncatedText;
+    await interaction.editReply({ embeds: [embed] });
   } catch (error) {
     const errorMessage = getExplanationErrorMessage(error);
     await interaction.editReply(errorMessage);
@@ -678,6 +770,7 @@ module.exports = {
   PRIMARY_BASE,
   DIFFICULTY_MAP,
   prune,
+  normalizeAnswers,
   resolveCorrectIndex,
   buildQuestionEmbed,
   createQuestionButtons,
