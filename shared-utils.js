@@ -9,6 +9,91 @@ function letterFromIndex(idx) {
   return String.fromCharCode(65 + idx);
 }
 
+/**
+ * Simple version of resolveCorrectIndex to avoid circular dependencies
+ */
+function resolveCorrectIndexSimple(question) {
+  const { options = [] } = question || {};
+  if (!options.length) return null;
+  
+  const answers = Array.isArray(question.answers) ? question.answers : [question.answers];
+  
+  for (const answer of answers) {
+    if (answer == null) continue;
+    
+    // Handle numeric answers (0-based indices from API)
+    if (typeof answer === 'number') {
+      if (answer >= 0 && answer < options.length) {
+        return answer; // Already 0-based
+      }
+    }
+    
+    // Handle string answers (letter or full text)
+    if (typeof answer === 'string') {
+      const trimmed = answer.trim();
+      
+      // Check if it's a single letter (A, B, C, D, etc.)
+      if (trimmed.length === 1) {
+        const letter = trimmed.toUpperCase();
+        const letterIndex = letter.charCodeAt(0) - 65; // A=0, B=1, C=2, etc.
+        if (letterIndex >= 0 && letterIndex < options.length) {
+          return letterIndex;
+        }
+      }
+      
+      // Check if it matches the full option text (case-insensitive)
+      const lowerTrimmed = trimmed.toLowerCase();
+      const index = options.findIndex(opt => {
+        if (opt == null) return false;
+        const optStr = String(opt).trim().toLowerCase();
+        return optStr === lowerTrimmed;
+      });
+      if (index !== -1) return index;
+    }
+  }
+  
+  return 0; // Default fallback
+}
+
+/**
+ * Clean up LaTeX expressions for Discord compatibility
+ */
+function cleanLatexForDiscord(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  return text
+    // Replace problematic LaTeX expressions with Discord-compatible alternatives
+    .replace(/\\boxed\{([^}]+)\}/g, '**$1**') // \boxed{text} -> **text**
+    .replace(/\\text\{([^}]+)\}/g, '$1') // \text{text} -> text
+    .replace(/\\mathrm\{([^}]+)\}/g, '$1') // \mathrm{text} -> text
+    .replace(/\\mathbf\{([^}]+)\}/g, '**$1**') // \mathbf{text} -> **text**
+    .replace(/\\mathit\{([^}]+)\}/g, '*$1*') // \mathit{text} -> *text*
+    .replace(/\\underline\{([^}]+)\}/g, '__$1__') // \underline{text} -> __text__
+    .replace(/\\overline\{([^}]+)\}/g, '~~$1~~') // \overline{text} -> ~~text~~
+    
+    // Fix common LaTeX spacing issues (but preserve line breaks)
+    .replace(/([a-zA-Z])\\([a-zA-Z])/g, '$1 $2') // Add space between LaTeX commands
+    
+    // Normalize multiple spaces within lines (but preserve line breaks)
+    .replace(/[ \t]+/g, ' ') // Replace multiple spaces/tabs with single space
+    
+    // Ensure proper Discord markdown formatting
+    .replace(/\*\*([^*]+)\*\*/g, '**$1**') // Ensure bold formatting
+    .replace(/\*([^*]+)\*/g, '*$1*') // Ensure italic formatting
+    .replace(/__([^_]+)__/g, '__$1__'); // Ensure underline formatting
+}
+
+/**
+ * Format explanation text - preserve original formatting, only clean LaTeX
+ */
+function formatExplanationText(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  // Just return the text as-is, preserving all original formatting
+  // The LaTeX cleaning is already handled by cleanLatexForDiscord
+  return text.trim();
+}
+
 function buildFullQuestionText(question) {
   let fullText = question.question || '';
   
@@ -36,12 +121,22 @@ function buildFullQuestionText(question) {
     }
   }
   
-  // If it's an MCQ question, append the options
+  // If it's an MCQ question, append the options and correct answer
   if (Array.isArray(question.options) && question.options.length > 0) {
     const answerChoices = question.options
       .map((opt, i) => `\n${letterFromIndex(i)}) ${opt}`)
       .join('');
     fullText += '\n\nAnswer Choices:' + answerChoices;
+    
+    // Include the correct answer for MCQ questions
+    if (question.answers && Array.isArray(question.answers) && question.answers.length > 0) {
+      const correctIndex = resolveCorrectIndexSimple(question);
+      if (correctIndex !== null && correctIndex >= 0 && correctIndex < question.options.length) {
+        const correctLetter = letterFromIndex(correctIndex);
+        const correctOption = question.options[correctIndex];
+        fullText += `\n\nCorrect Answer: ${correctLetter}) ${correctOption}`;
+      }
+    }
   } else {
     // For FRQ questions, add context to make it clear this is a complete question
     if (!fullText.toLowerCase().includes('question')) {
@@ -61,6 +156,7 @@ function buildFullQuestionText(question) {
 
 function buildTutorPrompt(questionText, eventName) {
   const isMCQ = questionText.includes('Answer Choices:');
+  const hasCorrectAnswer = questionText.includes('Correct Answer:');
   
   let prompt = `You are an expert Science Olympiad tutor specializing in ${eventName}. Your task is to provide a clear, educational explanation for the following question.
 
@@ -69,11 +165,22 @@ ${questionText}
 Instructions:
 - Provide a concise but complete step-by-step explanation (aim for 200-400 words)
 - If this is a multiple choice question, analyze each answer choice and explain why the correct answer is right and why the others are wrong
+- If a correct answer is provided, use that as the definitive correct answer in your explanation
 - If this is a free response question, provide a comprehensive explanation that covers all key concepts and expected points
 - Use clear scientific terminology and explain any complex concepts
 - Format your response to be educational and engaging for high school students
 - Focus on teaching the underlying science, not just giving the answer
 - Keep your response concise to avoid truncation in Discord
+- Use proper line breaks and spacing to make your explanation readable:
+  * Add line breaks between major sections
+  * Use bullet points (*) for lists
+  * Separate steps with line breaks
+  * Use clear paragraph breaks
+- For mathematical expressions, use simple formatting that works in Discord:
+  * Use **bold** for emphasis instead of \\boxed{}
+  * Use *italic* for variables instead of \\mathit{}
+  * Use regular text for subscripts (e.g., H₂ instead of H_2)
+  * Avoid complex LaTeX commands that don't render properly in Discord
 
 Please provide your explanation:`
 
@@ -225,6 +332,9 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
 
 module.exports = {
   letterFromIndex,
+  resolveCorrectIndexSimple,
+  cleanLatexForDiscord,
+  formatExplanationText,
   buildFullQuestionText,
   buildTutorPrompt,
   extractExplanation,
