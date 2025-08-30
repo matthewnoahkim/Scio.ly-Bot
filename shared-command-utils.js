@@ -71,64 +71,74 @@ function normalizeAnswers(answers) {
  * Resolve the correct answer index for MCQ questions
  */
 function resolveCorrectIndex(question) {
-  const { options = [] } = question || {};
-  if (!options.length) return null;
-  
-  // Normalize answers to handle various API response formats
-  const normalizedAnswers = normalizeAnswers(question.answers);
-  
-  for (const answer of normalizedAnswers) {
-    if (answer == null) continue;
-    
-    // Handle numeric answers (0-based indices from API)
-    if (typeof answer === 'number') {
-      // The API consistently returns 0-based indices
-      if (answer >= 0 && answer < options.length) {
-        return answer; // Already 0-based
-      }
+  try {
+    const { options = [] } = question || {};
+    if (!options.length) {
+      console.warn('No options available for question:', question?.id);
+      return null;
     }
     
-    // Handle string answers (letter or full text)
-    if (typeof answer === 'string') {
-      const trimmed = answer.trim();
+    // Normalize answers to handle various API response formats
+    const normalizedAnswers = normalizeAnswers(question.answers);
+    
+    for (const answer of normalizedAnswers) {
+      if (answer == null) continue;
       
-      // Check if it's a single letter (A, B, C, D, etc.)
-      if (trimmed.length === 1) {
-        const letter = trimmed.toUpperCase();
-        const letterIndex = letter.charCodeAt(0) - 65; // A=0, B=1, C=2, etc.
-        if (letterIndex >= 0 && letterIndex < options.length) {
-          return letterIndex;
+      // Handle numeric answers (0-based indices from API)
+      if (typeof answer === 'number') {
+        // The API consistently returns 0-based indices
+        if (answer >= 0 && answer < options.length) {
+          return answer; // Already 0-based
         }
       }
       
-      // Check if it matches the full option text (case-insensitive)
-      const lowerTrimmed = trimmed.toLowerCase();
-      const index = options.findIndex(opt => {
-        if (opt == null) return false;
-        const optStr = String(opt).trim().toLowerCase();
-        return optStr === lowerTrimmed;
-      });
-      if (index !== -1) return index;
-      
-      // Check for partial matches (in case of slight text differences)
-      const partialIndex = options.findIndex(opt => {
-        if (opt == null) return false;
-        const optStr = String(opt).trim().toLowerCase();
-        return optStr.includes(lowerTrimmed) || lowerTrimmed.includes(optStr);
-      });
-      if (partialIndex !== -1) return partialIndex;
+      // Handle string answers (letter or full text)
+      if (typeof answer === 'string') {
+        const trimmed = answer.trim();
+        
+        // Check if it's a single letter (A, B, C, D, etc.)
+        if (trimmed.length === 1) {
+          const letter = trimmed.toUpperCase();
+          const letterIndex = letter.charCodeAt(0) - 65; // A=0, B=1, C=2, etc.
+          if (letterIndex >= 0 && letterIndex < options.length) {
+            return letterIndex;
+          }
+        }
+        
+        // Check if it matches the full option text (case-insensitive)
+        const lowerTrimmed = trimmed.toLowerCase();
+        const index = options.findIndex(opt => {
+          if (opt == null) return false;
+          const optStr = String(opt).trim().toLowerCase();
+          return optStr === lowerTrimmed;
+        });
+        if (index !== -1) return index;
+        
+        // Check for partial matches (in case of slight text differences)
+        const partialIndex = options.findIndex(opt => {
+          if (opt == null) return false;
+          const optStr = String(opt).trim().toLowerCase();
+          return optStr.includes(lowerTrimmed) || lowerTrimmed.includes(optStr);
+        });
+        if (partialIndex !== -1) return partialIndex;
+      }
     }
+    
+    // If no valid answer found, log for debugging and return 0 as fallback
+    console.warn('Could not resolve correct answer index for question:', {
+      questionId: question.id,
+      originalAnswers: question.answers,
+      normalizedAnswers: normalizedAnswers,
+      options: options
+    });
+    
+    // Return 0 as fallback, but log that this might be incorrect
+    console.warn('Using fallback index 0 for question:', question?.id);
+    return 0;
+  } catch (error) {
+    console.error('Error in resolveCorrectIndex:', error);
+    return null;
   }
-  
-  // If no valid answer found, log for debugging and return 0 as fallback
-  console.warn('Could not resolve correct answer index for question:', {
-    questionId: question.id,
-    originalAnswers: question.answers,
-    normalizedAnswers: normalizedAnswers,
-    options: options
-  });
-  
-  return 0;
 }
 
 /**
@@ -297,43 +307,76 @@ async function fetchQuestion(eventName, options = {}) {
  * Handle MCQ answer checking
  */
 function handleMCQCheck(question, userAnswer) {
-  const options = question.options || [];
-  if (!options.length) {
-    return { error: 'This question has no options — cannot check as MCQ.' };
+  try {
+    const options = question.options || [];
+    if (!options.length) {
+      return { error: 'This question has no options — cannot check as MCQ.' };
+    }
+
+    const letter = (userAnswer[0] || '').toUpperCase();
+    const index = letter.charCodeAt(0) - 65;
+    
+    if (!(index >= 0 && index < options.length)) {
+      return { error: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.` };
+    }
+
+    const correctIndex = resolveCorrectIndex(question);
+    
+    // Validate correctIndex is valid
+    if (correctIndex === null || correctIndex < 0 || correctIndex >= options.length) {
+      console.error('Invalid correctIndex resolved:', {
+        questionId: question.id,
+        correctIndex: correctIndex,
+        optionsLength: options.length,
+        answers: question.answers
+      });
+      return { error: 'Unable to determine the correct answer for this question. Please try again.' };
+    }
+
+    const isCorrect = index === correctIndex;
+
+    // Add debugging information for answer parsing issues
+    if (correctIndex === 0 && question.answers && question.answers.length > 0) {
+      console.log('Answer parsing debug:', {
+        questionId: question.id,
+        userAnswer: userAnswer,
+        userIndex: index,
+        correctIndex: correctIndex,
+        answers: question.answers,
+        options: options,
+        isCorrect: isCorrect
+      });
+    }
+
+    // Validate that the options exist at the specified indices
+    const userOption = options[index];
+    const correctOption = options[correctIndex];
+    
+    if (!userOption || !correctOption) {
+      console.error('Invalid option access:', {
+        questionId: question.id,
+        userIndex: index,
+        correctIndex: correctIndex,
+        userOption: userOption,
+        correctOption: correctOption,
+        options: options
+      });
+      return { error: 'Question data is corrupted. Please try again.' };
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+      .addFields(
+        { name: 'Your answer', value: `**${letterFromIndex(index)})** ${userOption}`, inline: true },
+        { name: 'Correct answer', value: `**${letterFromIndex(correctIndex)})** ${correctOption}`, inline: true }
+      );
+
+    return { embed, isCorrect };
+  } catch (error) {
+    console.error('Error in handleMCQCheck:', error);
+    return { error: 'An error occurred while checking your answer. Please try again.' };
   }
-
-  const letter = (userAnswer[0] || '').toUpperCase();
-  const index = letter.charCodeAt(0) - 65;
-  
-  if (!(index >= 0 && index < options.length)) {
-    return { error: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.` };
-  }
-
-  const correctIndex = resolveCorrectIndex(question);
-  const isCorrect = index === correctIndex;
-
-  // Add debugging information for answer parsing issues
-  if (correctIndex === 0 && question.answers && question.answers.length > 0) {
-    console.log('Answer parsing debug:', {
-      questionId: question.id,
-      userAnswer: userAnswer,
-      userIndex: index,
-      correctIndex: correctIndex,
-      answers: question.answers,
-      options: options,
-      isCorrect: isCorrect
-    });
-  }
-
-  const embed = new EmbedBuilder()
-    .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-    .setTitle(isCorrect ? 'Correct!' : 'Wrong')
-    .addFields(
-      { name: 'Your answer', value: `**${letterFromIndex(index)})** ${options[index]}`, inline: true },
-      { name: 'Correct answer', value: `**${letterFromIndex(correctIndex)})** ${options[correctIndex]}`, inline: true }
-    );
-
-  return { embed, isCorrect };
 }
 
 /**
@@ -349,7 +392,8 @@ async function handleFRQGrading(question, userAnswer) {
       question: question.question,
       correctAnswers,
       studentAnswer: userAnswer
-    }]
+    }],
+    gradingInstructions: "Be VERY lenient in grading. Award points for: 1) Any mention of key concepts, even with different terminology, 2) Synonyms and related terms (e.g., 'K+ efflux' = 'K+ moves out'), 3) Partial answers that show understanding, 4) Different but equivalent phrasings, 5) Detailed explanations that cover the expected concepts. Focus on whether the student understands the core concepts, not exact word matching. Award at least 40% if the answer demonstrates understanding of the main concepts, even if phrased differently."
   };
 
   try {
@@ -394,7 +438,8 @@ async function handleFRQGrading(question, userAnswer) {
     }
 
     const percentageScore = Math.round(score * 100);
-    const isCorrect = percentageScore > 50;
+    // Be very lenient - consider 30%+ as satisfactory for FRQ questions
+    const isCorrect = percentageScore >= 30;
     
     // Format the expected answer for display
     const expectedAnswer = correctAnswers.length 
@@ -403,11 +448,14 @@ async function handleFRQGrading(question, userAnswer) {
 
     const embed = new EmbedBuilder()
       .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-      .setTitle(isCorrect ? 'Correct!' : 'Wrong')
+      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+      .setDescription('**Grading Results**')
       .addFields(
         { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
         { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
-      );
+      )
+      .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 30%` });
+
     return { embed, isCorrect, score };
 
   } catch (error) {
@@ -496,37 +544,96 @@ const DIFFICULTY_MAP = {
  * Handle check answer interaction
  */
 async function handleCheckAnswerInteraction(interaction, question) {
-  const isMCQ = Array.isArray(question.options) && question.options.length > 0;
-  const modal = createAnswerModal(interaction.message.id, isMCQ);
-  
-  await interaction.showModal(modal);
-
   try {
-    const modalSubmit = await interaction.awaitModalSubmit({
-      time: 5 * 60 * 1000, // 5 minutes
-      filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
-    });
+    // Validate question data
+    if (!question || !question.question) {
+      await interaction.reply({ 
+        content: 'Question data is invalid. Please try again.', 
+        flags: 64 // Ephemeral flag
+      });
+      return;
+    }
 
-    const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
+    const isMCQ = Array.isArray(question.options) && question.options.length > 0;
+    const modal = createAnswerModal(interaction.message.id, isMCQ);
+    
+    await interaction.showModal(modal);
 
-    if (isMCQ) {
-      const result = handleMCQCheck(question, userAnswer);
-      if (result.error) {
-        await modalSubmit.reply(result.error);
+    try {
+      const modalSubmit = await interaction.awaitModalSubmit({
+        time: 5 * 60 * 1000, // 5 minutes
+        filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
+      });
+
+      const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
+      
+      // Validate user input
+      if (!userAnswer) {
+        await modalSubmit.reply({ 
+          content: 'Please provide an answer.', 
+          flags: 64 // Ephemeral flag
+        });
         return;
       }
-      await modalSubmit.reply({ embeds: [result.embed] });
-    } else {
-      try {
-        const result = await handleFRQGrading(question, userAnswer);
+
+      if (isMCQ) {
+        const result = handleMCQCheck(question, userAnswer);
+        if (result.error) {
+          await modalSubmit.reply({ 
+            content: result.error, 
+            flags: 64 // Ephemeral flag
+          });
+          return;
+        }
         await modalSubmit.reply({ embeds: [result.embed] });
-      } catch (error) {
-        const errorMessage = getGradingErrorMessage(error);
-        await modalSubmit.reply(errorMessage);
+      } else {
+        // For FRQ, defer the reply immediately to prevent timeout
+        await modalSubmit.deferReply();
+        
+        try {
+          const result = await handleFRQGrading(question, userAnswer);
+          await modalSubmit.editReply({ embeds: [result.embed] });
+        } catch (error) {
+          console.error('FRQ grading error:', error);
+          const errorMessage = getGradingErrorMessage(error);
+          await modalSubmit.editReply({ 
+            content: errorMessage, 
+            flags: 64 // Ephemeral flag
+          });
+        }
+      }
+    } catch (error) {
+      // Modal timeout or other error
+      console.error('Modal interaction error:', error);
+      if (error.code === 'INTERACTION_COLLECTOR_ERROR') {
+        // Modal was closed or timed out
+        return;
+      }
+      if (error.code === 10062) {
+        // Unknown interaction - already timed out
+        console.log('Interaction timed out, cannot send error message');
+        return;
+      }
+      // Try to send error message if possible
+      try {
+        await interaction.followUp({ 
+          content: 'Something went wrong with the answer submission. Please try again.', 
+          flags: 64 // Ephemeral flag
+        });
+      } catch (followUpError) {
+        console.error('Failed to send follow-up error:', followUpError);
       }
     }
   } catch (error) {
-    // Modal timeout or other error - user will see modal disappear
+    console.error('Error in handleCheckAnswerInteraction:', error);
+    try {
+      await interaction.reply({ 
+        content: 'Something went wrong. Please try again.', 
+        flags: 64 // Ephemeral flag
+      });
+    } catch (replyError) {
+      console.error('Failed to send error reply:', replyError);
+    }
   }
 }
 
@@ -728,7 +835,7 @@ function createSciOlyCommand(config) {
             if (buttonInteraction.user.id !== interaction.user.id) {
               await buttonInteraction.reply({
                 content: 'Only the original requester can use these buttons.',
-                ephemeral: true
+                flags: 64 // Ephemeral flag
               });
               return;
             }
