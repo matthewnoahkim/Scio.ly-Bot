@@ -1,8 +1,7 @@
 const axios = require('axios');
 
 // ====== Config ======
-const PRIMARY_BASE = 'https://scio.ly';
-const FALLBACK_BASE = 'https://scioly-api.vercel.app';
+const BASE = 'https://scio.ly';
 
 // ===== Shared Helper Functions =====
 function letterFromIndex(idx) {
@@ -203,7 +202,7 @@ async function callGeminiThroughScioLy(question, eventName, userAnswer, authHead
   };
   
   try {
-    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/explain`, requestBody, {
+    const response = await axios.post(`${BASE}/api/gemini/explain`, requestBody, {
       headers: {
         'Content-Type': 'application/json',
         ...authHeaders
@@ -307,22 +306,6 @@ async function getExplanationWithRetry(question, eventName, authHeaders, logPref
         retryCount++;
         await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
         continue;
-      }
-      
-      // If all retries failed, try fallback API with legacy format
-      try {
-        const tutorPrompt = buildTutorPrompt(fullQuestionText, eventName);
-        const fallbackRes = await axios.post(`${FALLBACK_BASE}/api/gemini/explain`, {
-          question: tutorPrompt,
-          event: eventName,
-          streaming: false
-        }, { headers: authHeaders });
-        
-        const explanation = extractExplanation(fallbackRes.data) || 'No explanation was returned.';
-        return explanation;
-      } catch (fallbackErr) {
-        console.error(`[${logPrefix}] All explanation APIs failed:`, fallbackErr?.response?.status, fallbackErr?.message);
-        throw fallbackErr;
       }
     }
   }
