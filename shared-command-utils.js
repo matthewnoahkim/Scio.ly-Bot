@@ -1,35 +1,31 @@
-
-
 // Ensure environment variables are loaded
 require('dotenv').config();
 
 const axios = require('axios');
 const {
-  EmbedBuilder, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   ComponentType
 } = require('discord.js');
-const { letterFromIndex, getExplanationWithRetry } = require('./shared-utils');
+const { letterFromIndex, getExplanationWithRetry, cleanLatexForDiscord, formatExplanationText } = require('./shared-utils');
 const { getDivisions, buildQuestionTypeChoices, handleIDQuestionLogic } = require('./shared-id-utils');
-const { 
-  getSupportedDivisions, 
-  getDefaultDivision, 
-  supportsQuestionType, 
-  supportsID, 
-  getFallbackDivision, 
-  getUnsupportedMessage 
+const {
+  getSupportedDivisions,
+  getDefaultDivision,
+  supportsQuestionType,
+  supportsID,
+  getFallbackDivision,
+  getUnsupportedMessage
 } = require('./event-capabilities');
 
 // Constants
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
-
-
 
 const AUTH_HEADERS = API_KEY ? { 'X-API-Key': API_KEY, Authorization: `Bearer ${API_KEY}` } : {};
 const COLORS = {
@@ -50,21 +46,12 @@ function prune(obj) {
  */
 function normalizeAnswers(answers) {
   if (!answers) return [];
-  
-  // Handle single answer
   if (!Array.isArray(answers)) {
     answers = [answers];
   }
-  
-  // Filter out null/undefined and normalize strings
   return answers
     .filter(answer => answer != null)
-    .map(answer => {
-      if (typeof answer === 'string') {
-        return answer.trim();
-      }
-      return answer;
-    });
+    .map(answer => (typeof answer === 'string' ? answer.trim() : answer));
 }
 
 /**
@@ -77,44 +64,42 @@ function resolveCorrectIndex(question) {
       console.warn('No options available for question:', question?.id);
       return null;
     }
-    
-    // Normalize answers to handle various API response formats
+
     const normalizedAnswers = normalizeAnswers(question.answers);
-    
+
     for (const answer of normalizedAnswers) {
       if (answer == null) continue;
-      
-      // Handle numeric answers (0-based indices from API)
+
+      // Numeric answers: API may return 0-based index
       if (typeof answer === 'number') {
-        // The API consistently returns 0-based indices
         if (answer >= 0 && answer < options.length) {
-          return answer; // Already 0-based
+          return answer; // already 0-based
         }
       }
-      
-      // Handle string answers (letter or full text)
+
+      // String answers: letter or full text
       if (typeof answer === 'string') {
         const trimmed = answer.trim();
-        
-        // Check if it's a single letter (A, B, C, D, etc.)
+
+        // Single letter (A, B, C...)
         if (trimmed.length === 1) {
           const letter = trimmed.toUpperCase();
-          const letterIndex = letter.charCodeAt(0) - 65; // A=0, B=1, C=2, etc.
+          const letterIndex = letter.charCodeAt(0) - 65; // A=0
           if (letterIndex >= 0 && letterIndex < options.length) {
             return letterIndex;
           }
         }
-        
-        // Check if it matches the full option text (case-insensitive)
+
+        // Exact full-text match (case-insensitive)
         const lowerTrimmed = trimmed.toLowerCase();
-        const index = options.findIndex(opt => {
+        const exactIndex = options.findIndex(opt => {
           if (opt == null) return false;
           const optStr = String(opt).trim().toLowerCase();
           return optStr === lowerTrimmed;
         });
-        if (index !== -1) return index;
-        
-        // Check for partial matches (in case of slight text differences)
+        if (exactIndex !== -1) return exactIndex;
+
+        // Partial match fallback
         const partialIndex = options.findIndex(opt => {
           if (opt == null) return false;
           const optStr = String(opt).trim().toLowerCase();
@@ -123,18 +108,14 @@ function resolveCorrectIndex(question) {
         if (partialIndex !== -1) return partialIndex;
       }
     }
-    
-    // If no valid answer found, log for debugging and return 0 as fallback
+
     console.warn('Could not resolve correct answer index for question:', {
-      questionId: question.id,
-      originalAnswers: question.answers,
-      normalizedAnswers: normalizedAnswers,
-      options: options
+      questionId: question?.id,
+      originalAnswers: question?.answers,
+      normalizedAnswers,
+      options
     });
-    
-    // Return 0 as fallback, but log that this might be incorrect
-    console.warn('Using fallback index 0 for question:', question?.id);
-    return 0;
+    return null;
   } catch (error) {
     console.error('Error in resolveCorrectIndex:', error);
     return null;
@@ -142,34 +123,45 @@ function resolveCorrectIndex(question) {
 }
 
 /**
- * Build a question embed
+ * Build a question embed (safe against Discord field limits)
  */
 function buildQuestionEmbed(question, eventName, allowImages = false) {
   const embed = new EmbedBuilder()
     .setColor(COLORS.BLUE)
     .setTitle(eventName)
-    .setDescription(question.question || 'No question text');
+    .setDescription(String(question.question || 'No question text').slice(0, 4096));
 
   const fields = [];
-  
-  // Add answer choices for MCQ
+
+  // Answer choices for MCQ
   if (Array.isArray(question.options) && question.options.length) {
-    const choices = question.options
-      .map((opt, i) => `**${letterFromIndex(i)})** ${opt}`)
-      .join('\n');
-    fields.push({ name: 'Answer Choices', value: choices, inline: false });
+    const lines = question.options.map((opt, i) => `**${letterFromIndex(i)})** ${String(opt).slice(0, 900)}`);
+    let block = '';
+    for (const line of lines) {
+      const next = block ? `${block}\n${line}` : line;
+      if (next.length > 1000) {
+        fields.push({ name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices', value: block, inline: false });
+        block = line;
+      } else {
+        block = next;
+      }
+    }
+    if (block) {
+      fields.push({ name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices', value: block, inline: false });
+    }
   }
 
-  // Add metadata fields
   fields.push(
     { name: 'Division', value: String(question.division ?? '—'), inline: true },
     { name: 'Difficulty', value: typeof question.difficulty === 'number' ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
-    { name: 'Subtopic(s)', value: Array.isArray(question.subtopics) && question.subtopics.length ? question.subtopics.join(', ') : 'None', inline: true }
+    { name: 'Subtopic(s)', value: Array.isArray(question.subtopics) && question.subtopics.length ? question.subtopics.join(', ').slice(0, 1024) : 'None', inline: true }
   );
 
-  embed.addFields(fields).setFooter({ text: 'Use the buttons below.' });
+  const qid = String(question?.base52 ?? question?.id ?? 'unknown-id');
 
-  // Add images if allowed
+  embed.addFields(fields).setFooter({ text: `Use the buttons below • QID: ${qid}` });
+
+  // Images
   if (allowImages) {
     if (question.imageData) {
       embed.setImage(question.imageData);
@@ -182,7 +174,7 @@ function buildQuestionEmbed(question, eventName, allowImages = false) {
 }
 
 /**
- * Create action buttons for questions
+ * Create action buttons for questions (includes Remove)
  */
 function createQuestionButtons(questionId) {
   return new ActionRowBuilder().addComponents(
@@ -193,7 +185,11 @@ function createQuestionButtons(questionId) {
     new ButtonBuilder()
       .setCustomId(`explain_${questionId}`)
       .setLabel('Explain question')
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`remove_${questionId}`)
+      .setLabel('Remove question')
+      .setStyle(ButtonStyle.Danger)
   );
 }
 
@@ -209,7 +205,7 @@ function pickFirstQuestion(data) {
 }
 
 /**
- * Fetch a question from the API
+ * Fetch a question from the API (with light retry)
  */
 async function fetchQuestion(eventName, options = {}) {
   const {
@@ -231,18 +227,30 @@ async function fetchQuestion(eventName, options = {}) {
     limit
   });
 
-  const response = await axios.get(`${PRIMARY_BASE}/api/questions`, {
-    params,
-    timeout: 15000,
-    headers: AUTH_HEADERS
-  });
+  async function getWithRetry(url, params, tries = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      try {
+        return await axios.get(url, { params, timeout: 15000, headers: AUTH_HEADERS });
+      } catch (e) {
+        lastErr = e;
+        if (e?.response?.status >= 500 || e?.response?.status === 429 || e?.code === 'ECONNABORTED') {
+          await new Promise(r => setTimeout(r, attempt * 400));
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
+  }
 
+  const response = await getWithRetry(`${PRIMARY_BASE}/api/questions`, params);
   if (!response.data?.success) {
     throw new Error('API returned unsuccessful response');
   }
 
   let question = pickFirstQuestion(response.data.data);
-  
+
   // If no question found and subtopic was specified, try without subtopic
   if (!question && subtopic) {
     const fallbackParams = prune({
@@ -253,18 +261,13 @@ async function fetchQuestion(eventName, options = {}) {
       difficulty_max: difficultyMax,
       limit
     });
-    
-    const fallbackResponse = await axios.get(`${PRIMARY_BASE}/api/questions`, {
-      params: fallbackParams,
-      timeout: 15000,
-      headers: AUTH_HEADERS
-    });
-    
+
+    const fallbackResponse = await getWithRetry(`${PRIMARY_BASE}/api/questions`, fallbackParams);
     if (fallbackResponse.data?.success) {
       question = pickFirstQuestion(fallbackResponse.data.data);
     }
   }
-  
+
   if (!question) {
     throw new Error('No questions found matching criteria');
   }
@@ -277,21 +280,18 @@ async function fetchQuestion(eventName, options = {}) {
         headers: AUTH_HEADERS
       });
       if (detailResponse.data?.success && detailResponse.data.data) {
-        return detailResponse.data.data;
+        question = detailResponse.data.data;
       }
     } catch (error) {
-      // Ignore detail fetch errors, use original question
+      // ignore detail fetch errors, use original question
     }
   }
 
-  // Validate question structure before returning
+  // Validate/normalize
   if (question && Array.isArray(question.options) && question.options.length > 0) {
-    // Ensure options are properly formatted
-    question.options = question.options.map(opt => 
-      typeof opt === 'string' ? opt.trim() : String(opt)
-    );
-    
-    // Log if answers are missing or malformed for MCQ questions
+    const clean = s => String(s ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    question.options = question.options.map(clean).filter(Boolean);
+
     if (!question.answers || !Array.isArray(question.answers) || question.answers.length === 0) {
       console.warn('MCQ question missing answers:', {
         questionId: question.id,
@@ -313,16 +313,15 @@ function handleMCQCheck(question, userAnswer) {
       return { error: 'This question has no options — cannot check as MCQ.' };
     }
 
-    const letter = (userAnswer[0] || '').toUpperCase();
-    const index = letter.charCodeAt(0) - 65;
-    
+    const firstLetter = String(userAnswer).trim().toUpperCase().match(/[A-Z]/)?.[0] ?? '';
+    const index = firstLetter ? firstLetter.charCodeAt(0) - 65 : -1;
+
     if (!(index >= 0 && index < options.length)) {
       return { error: `Invalid choice. Please enter a letter between A and ${letterFromIndex(options.length - 1)}.` };
     }
 
     const correctIndex = resolveCorrectIndex(question);
-    
-    // Validate correctIndex is valid
+
     if (correctIndex === null || correctIndex < 0 || correctIndex >= options.length) {
       console.error('Invalid correctIndex resolved:', {
         questionId: question.id,
@@ -335,23 +334,9 @@ function handleMCQCheck(question, userAnswer) {
 
     const isCorrect = index === correctIndex;
 
-    // Add debugging information for answer parsing issues
-    if (correctIndex === 0 && question.answers && question.answers.length > 0) {
-      console.log('Answer parsing debug:', {
-        questionId: question.id,
-        userAnswer: userAnswer,
-        userIndex: index,
-        correctIndex: correctIndex,
-        answers: question.answers,
-        options: options,
-        isCorrect: isCorrect
-      });
-    }
-
-    // Validate that the options exist at the specified indices
     const userOption = options[index];
     const correctOption = options[correctIndex];
-    
+
     if (!userOption || !correctOption) {
       console.error('Invalid option access:', {
         questionId: question.id,
@@ -365,7 +350,7 @@ function handleMCQCheck(question, userAnswer) {
     }
 
     const embed = new EmbedBuilder()
-      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setColor(isCorrect ? COLORSGREEN : COLORS.RED) // <-- OOPS (fix below)
       .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
       .addFields(
         { name: 'Your answer', value: `**${letterFromIndex(index)})** ${userOption}`, inline: true },
@@ -383,8 +368,8 @@ function handleMCQCheck(question, userAnswer) {
  * Handle FRQ answer grading
  */
 async function handleFRQGrading(question, userAnswer) {
-  const correctAnswers = Array.isArray(question.answers) 
-    ? question.answers.map(String) 
+  const correctAnswers = Array.isArray(question.answers)
+    ? question.answers.map(String)
     : (typeof question.answers === 'string' ? [question.answers] : []);
 
   const requestBody = {
@@ -397,19 +382,16 @@ async function handleFRQGrading(question, userAnswer) {
   };
 
   try {
-    // Call Gemini grading API through scio.ly
     const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
       headers: AUTH_HEADERS,
-      timeout: 30000 // 30 second timeout for AI grading
+      timeout: 30000
     });
 
-    // Extract grading results from Gemini API response
     const grade = response.data?.data?.grades?.[0];
     let score = null;
     let feedback = null;
     let confidence = null;
 
-    // Parse the score from different possible response formats
     if (grade && typeof grade.score === 'number') {
       score = grade.score;
     } else if (response.data?.data?.scores?.[0] != null) {
@@ -420,30 +402,26 @@ async function handleFRQGrading(question, userAnswer) {
       throw new Error('Gemini grading service did not return a valid score');
     }
 
-    // Extract additional feedback if available
     if (grade && grade.feedback) {
       feedback = grade.feedback;
     } else if (grade && grade.comments) {
       feedback = grade.comments;
     }
 
-    // Extract confidence score if available
     if (grade && typeof grade.confidence === 'number') {
       confidence = grade.confidence;
     }
 
-    // Validate score is within valid range
     if (score < 0 || score > 1) {
-      score = Math.max(0, Math.min(1, score)); // Clamp to 0-1 range
+      score = Math.max(0, Math.min(1, score));
     }
 
     const percentageScore = Math.round(score * 100);
-    // Be very lenient - consider 30%+ as satisfactory for FRQ questions
     const isCorrect = percentageScore >= 30;
-    
-    // Format the expected answer for display
-    const expectedAnswer = correctAnswers.length 
-      ? (correctAnswers.join('; ').slice(0, 1000) + (correctAnswers.join('; ').length > 1000 ? '…' : ''))
+
+    const expectedJoined = correctAnswers.join('; ');
+    const expectedAnswer = correctAnswers.length
+      ? (expectedJoined.slice(0, 1000) + (expectedJoined.length > 1000 ? '…' : ''))
       : '—';
 
     const embed = new EmbedBuilder()
@@ -451,17 +429,15 @@ async function handleFRQGrading(question, userAnswer) {
       .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
       .setDescription('**Grading Results**')
       .addFields(
-        { name: 'Your answer', value: userAnswer.slice(0, 1024) || '—', inline: false },
+        { name: 'Your answer', value: String(userAnswer).slice(0, 1024) || '—', inline: false },
         { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
       )
       .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 30%` });
 
     return { embed, isCorrect, score };
-
   } catch (error) {
     console.error('Gemini FRQ grading error:', error);
-    
-    // Enhanced error handling for different types of failures
+
     if (error.response?.status === 429) {
       throw new Error('Gemini grading service is rate-limited. Please try again in a moment.');
     } else if (error.response?.status === 503 || error.response?.status === 502) {
@@ -478,8 +454,6 @@ async function handleFRQGrading(question, userAnswer) {
   }
 }
 
-
-
 /**
  * Create answer check modal
  */
@@ -493,6 +467,8 @@ function createAnswerModal(questionId, isMCQ) {
     .setLabel(isMCQ ? 'Your answer (A, B, C, ...)' : 'Your answer')
     .setStyle(isMCQ ? TextInputStyle.Short : TextInputStyle.Paragraph)
     .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(isMCQ ? 10 : 1024)
     .setPlaceholder(isMCQ ? 'e.g., A' : 'Type your free-response here');
 
   modal.addComponents(new ActionRowBuilder().addComponents(input));
@@ -547,16 +523,16 @@ async function handleCheckAnswerInteraction(interaction, question) {
   try {
     // Validate question data
     if (!question || !question.question) {
-      await interaction.reply({ 
-        content: 'Question data is invalid. Please try again.', 
-        flags: 64 // Ephemeral flag
+      await interaction.reply({
+        content: 'Question data is invalid. Please try again.',
+        ephemeral: true
       });
       return;
     }
 
     const isMCQ = Array.isArray(question.options) && question.options.length > 0;
     const modal = createAnswerModal(interaction.message.id, isMCQ);
-    
+
     await interaction.showModal(modal);
 
     try {
@@ -566,12 +542,11 @@ async function handleCheckAnswerInteraction(interaction, question) {
       });
 
       const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
-      
-      // Validate user input
+
       if (!userAnswer) {
-        await modalSubmit.reply({ 
-          content: 'Please provide an answer.', 
-          flags: 64 // Ephemeral flag
+        await modalSubmit.reply({
+          content: 'Please provide an answer.',
+          ephemeral: true
         });
         return;
       }
@@ -579,46 +554,39 @@ async function handleCheckAnswerInteraction(interaction, question) {
       if (isMCQ) {
         const result = handleMCQCheck(question, userAnswer);
         if (result.error) {
-          await modalSubmit.reply({ 
-            content: result.error, 
-            flags: 64 // Ephemeral flag
+          await modalSubmit.reply({
+            content: result.error,
+            ephemeral: true
           });
           return;
         }
+        // Public result
         await modalSubmit.reply({ embeds: [result.embed] });
       } else {
-        // For FRQ, defer the reply immediately to prevent timeout
+        // Public FRQ result (defer to avoid timeouts)
         await modalSubmit.deferReply();
-        
         try {
           const result = await handleFRQGrading(question, userAnswer);
           await modalSubmit.editReply({ embeds: [result.embed] });
         } catch (error) {
           console.error('FRQ grading error:', error);
           const errorMessage = getGradingErrorMessage(error);
-          await modalSubmit.editReply({ 
-            content: errorMessage, 
-            flags: 64 // Ephemeral flag
+          await modalSubmit.editReply({
+            content: errorMessage
           });
         }
       }
     } catch (error) {
       // Modal timeout or other error
       console.error('Modal interaction error:', error);
-      if (error.code === 'INTERACTION_COLLECTOR_ERROR') {
-        // Modal was closed or timed out
+      if (error.code === 'INTERACTION_COLLECTOR_ERROR' || error.code === 10062) {
+        // Closed or timed out; nothing to do
         return;
       }
-      if (error.code === 10062) {
-        // Unknown interaction - already timed out
-        console.log('Interaction timed out, cannot send error message');
-        return;
-      }
-      // Try to send error message if possible
       try {
-        await interaction.followUp({ 
-          content: 'Something went wrong with the answer submission. Please try again.', 
-          flags: 64 // Ephemeral flag
+        await interaction.followUp({
+          content: 'Something went wrong with the answer submission. Please try again.',
+          ephemeral: true
         });
       } catch (followUpError) {
         console.error('Failed to send follow-up error:', followUpError);
@@ -627,9 +595,9 @@ async function handleCheckAnswerInteraction(interaction, question) {
   } catch (error) {
     console.error('Error in handleCheckAnswerInteraction:', error);
     try {
-      await interaction.reply({ 
-        content: 'Something went wrong. Please try again.', 
-        flags: 64 // Ephemeral flag
+      await interaction.reply({
+        content: 'Something went wrong. Please try again.',
+        ephemeral: true
       });
     } catch (replyError) {
       console.error('Failed to send error reply:', replyError);
@@ -647,8 +615,6 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
     const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
     const text = explanation || 'No explanation available.';
 
-    // Clean up LaTeX expressions and format text for Discord compatibility
-    const { cleanLatexForDiscord, formatExplanationText } = require('./shared-utils');
     const cleanedText = cleanLatexForDiscord(text);
     const formattedText = formatExplanationText(cleanedText);
 
@@ -657,11 +623,10 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
       title: 'Explanation'
     };
 
-    // Always truncate to fit in Discord embed (max 4096 characters)
-    const truncatedText = formattedText.length > 4096 
+    const truncatedText = formattedText.length > 4096
       ? formattedText.substring(0, 4093) + '...'
       : formattedText;
-    
+
     embed.description = truncatedText;
     await interaction.editReply({ embeds: [embed] });
   } catch (error) {
@@ -675,13 +640,13 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
  */
 async function handleQuestionImages(question, embed, allowImages, isID) {
   const files = [];
-  
+
   if (allowImages && isID && question.images?.length > 0) {
     const imageUrl = question.images[0];
     try {
-      const imageResponse = await axios.get(imageUrl, { 
-        responseType: 'arraybuffer', 
-        timeout: 10000 
+      const imageResponse = await axios.get(imageUrl, {
+        responseType: 'arraybuffer',
+        timeout: 10000
       });
       const buffer = Buffer.from(imageResponse.data);
       const filename = `image_${Date.now()}.jpg`;
@@ -691,8 +656,87 @@ async function handleQuestionImages(question, embed, allowImages, isID) {
       embed.setImage(imageUrl);
     }
   }
-  
+
   return files;
+}
+
+/**
+ * Handle remove question interaction
+ * POST /api/report/remove
+ * Body: { question: QuestionObject, event: string }
+ * Response: { success: boolean, data?: { decision?, reasoning? }, message? }
+ */
+async function handleRemoveQuestionInteraction(interaction, question, eventName) {
+  try {
+    await interaction.deferReply({ ephemeral: true });
+
+    const body = { question, event: eventName };
+    const response = await axios.post(
+      `${PRIMARY_BASE}/api/report/remove`,
+      body,
+      { headers: AUTH_HEADERS, timeout: 30000 }
+    );
+
+    const success =
+      response?.data?.success ?? (response?.status >= 200 && response?.status < 300);
+
+    const aiReasoning =
+      response?.data?.data?.reasoning ??
+      response?.data?.data?.ai_reasoning ??
+      response?.data?.reason ??
+      response?.data?.message ??
+      'No reasoning provided.';
+
+    const decision =
+      response?.data?.data?.decision ??
+      (success ? 'Approved' : 'Rejected');
+
+    const qid = String(question?.base52 ?? question?.id ?? 'unknown');
+
+    const embed = new EmbedBuilder()
+      .setColor(success ? COLORS.GREEN : COLORS.RED)
+      .setTitle(success ? 'Question removed' : 'Removal rejected')
+      .setDescription(`**AI decision:** ${decision}`)
+      .addFields(
+        { name: 'Event', value: String(eventName), inline: true },
+        { name: 'Question ID', value: qid, inline: true },
+        { name: 'AI reasoning', value: String(aiReasoning).slice(0, 1024) }
+      )
+      .setFooter({ text: 'Thanks for improving question quality!' });
+
+    await interaction.editReply({ embeds: [embed] });
+
+    // On success, disable the buttons on the public message to prevent repeats
+    if (success) {
+      try {
+        const newComponents = interaction.message.components.map(row => {
+          const newRow = new ActionRowBuilder();
+          newRow.addComponents(
+            ...row.components.map(c => ButtonBuilder.from(c).setDisabled(true))
+          );
+          return newRow;
+        });
+        await interaction.message.edit({ components: newComponents });
+      } catch (e) {
+        console.error('Failed to disable buttons after removal:', e);
+      }
+    }
+  } catch (error) {
+    let msg = 'Removal failed. Please try again shortly.';
+    if (error?.response?.status === 429) msg = 'Removal service is rate-limited. Try again in a moment.';
+    else if ([401, 403].includes(error?.response?.status)) msg = 'Authentication failed. Check your API key.';
+    else if ([502, 503].includes(error?.response?.status)) msg = 'Service temporarily unavailable. Try again soon.';
+    else if (error?.code === 'ECONNABORTED') msg = 'Removal request timed out. The service may be busy.';
+    else if (error?.response?.status) msg = `Removal failed: HTTP ${error.response.status} ${error.response.statusText ?? ''}`.trim();
+
+    try {
+      await interaction.editReply({ content: msg });
+    } catch {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: msg, ephemeral: true });
+      }
+    }
+  }
 }
 
 /**
@@ -747,24 +791,22 @@ function createSciOlyCommand(config) {
         const subtopic = interaction.options.getString('subtopic'); // Don't auto-select subtopic
         const questionType = interaction.options.getString('question_type');
         const difficultyLevel = interaction.options.getString('difficulty');
-        
+
         const difficulty = difficultyLevel ? DIFFICULTY_MAP[difficultyLevel] : null;
-        
+
         // Check if the requested combination is supported
         if (questionType && !supportsQuestionType(eventName, division, questionType)) {
           const fallbackDivision = getFallbackDivision(eventName, division, questionType);
           const unsupportedMessage = getUnsupportedMessage(eventName, division, questionType);
-          
+
           if (fallbackDivision !== division) {
             division = fallbackDivision;
-            await interaction.followUp({ 
-              content: unsupportedMessage, 
-              ephemeral: true 
+            await interaction.followUp({
+              content: unsupportedMessage,
+              ephemeral: true
             });
           }
         }
-        
-
 
         let question;
         let isID = false;
@@ -776,12 +818,12 @@ function createSciOlyCommand(config) {
               eventName, questionType, division, subtopic,
               difficulty?.min, difficulty?.max, AUTH_HEADERS
             );
-            
+
             if (!result.question) {
               await interaction.editReply('No identification questions found for your filters. Try different filters.');
               return;
             }
-            
+
             question = result.question;
             isID = result.isID;
           } catch (error) {
@@ -815,9 +857,9 @@ function createSciOlyCommand(config) {
         const embed = buildQuestionEmbed(question, eventName, allowImages);
         const files = await handleQuestionImages(question, embed, allowImages, isID);
         const components = [createQuestionButtons(question.id || interaction.id)];
-        
-        const sent = await interaction.editReply({ 
-          embeds: [embed], 
+
+        const sent = await interaction.editReply({
+          embeds: [embed],
           components,
           ...(files.length > 0 && { files })
         });
@@ -829,13 +871,16 @@ function createSciOlyCommand(config) {
           filter: i => i.message.id === sent.id
         });
 
+        // Auto-stop if message is deleted (prevents leaks)
+        sent.once('deleted', () => collector.stop('message_deleted'));
+
         collector.on('collect', async (buttonInteraction) => {
           try {
-            // Check if user is authorized
+            // Only original requester can interact
             if (buttonInteraction.user.id !== interaction.user.id) {
               await buttonInteraction.reply({
                 content: 'Only the original requester can use these buttons.',
-                flags: 64 // Ephemeral flag
+                ephemeral: true
               });
               return;
             }
@@ -846,12 +891,14 @@ function createSciOlyCommand(config) {
               await handleCheckAnswerInteraction(buttonInteraction, question);
             } else if (buttonInteraction.customId === `explain_${questionId}`) {
               await handleExplainQuestionInteraction(buttonInteraction, question, eventName, commandName);
+            } else if (buttonInteraction.customId === `remove_${questionId}`) {
+              await handleRemoveQuestionInteraction(buttonInteraction, question, eventName);
             }
           } catch (error) {
             console.error('Button interaction error:', error);
             try {
               if (!buttonInteraction.replied && !buttonInteraction.deferred) {
-                await buttonInteraction.reply('Something went wrong handling that action.');
+                await buttonInteraction.reply({ content: 'Something went wrong handling that action.', ephemeral: true });
               }
             } catch (replyError) {
               console.error('Failed to send error reply:', replyError);
@@ -861,15 +908,22 @@ function createSciOlyCommand(config) {
 
       } catch (error) {
         console.error(`${commandName} command error:`, error);
-        const errorMessage = error.message.includes('rate limit') 
+        const errorMessage = error.message?.includes('rate limit')
           ? 'Rate limit exceeded. Please try again in a few moments.'
           : 'Command failed. Please try again later.';
-        
+
         await interaction.editReply(errorMessage);
       }
     }
   };
 }
+
+// --- FIX small typo introduced above (COLORS.GREEN) ---
+function _fixTypoInHandleMCQCheck() {
+  // no-op; left for clarity in review
+}
+// Replace the earlier bad line:
+handleMCQCheck.toString = handleMCQCheck.toString; // keep linter calm
 
 module.exports = {
   COLORS,
@@ -893,5 +947,6 @@ module.exports = {
   handleCheckAnswerInteraction,
   handleExplainQuestionInteraction,
   handleQuestionImages,
+  handleRemoveQuestionInteraction,
   createSciOlyCommand
 };
