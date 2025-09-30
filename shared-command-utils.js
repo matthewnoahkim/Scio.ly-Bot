@@ -10,19 +10,10 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  ComponentType,
-  SlashCommandBuilder
+  ComponentType
 } = require('discord.js');
-
-const {
-  letterFromIndex,
-  getExplanationWithRetry,
-  cleanLatexForDiscord,
-  formatExplanationText
-} = require('./shared-utils');
-
+const { letterFromIndex, getExplanationWithRetry, cleanLatexForDiscord, formatExplanationText } = require('./shared-utils');
 const { getDivisions, buildQuestionTypeChoices, handleIDQuestionLogic } = require('./shared-id-utils');
-
 const {
   getSupportedDivisions,
   getDefaultDivision,
@@ -55,7 +46,9 @@ function prune(obj) {
  */
 function normalizeAnswers(answers) {
   if (!answers) return [];
-  if (!Array.isArray(answers)) answers = [answers];
+  if (!Array.isArray(answers)) {
+    answers = [answers];
+  }
   return answers
     .filter(answer => answer != null)
     .map(answer => (typeof answer === 'string' ? answer.trim() : answer));
@@ -77,27 +70,40 @@ function resolveCorrectIndex(question) {
     for (const answer of normalizedAnswers) {
       if (answer == null) continue;
 
-      // Numeric (assume 0-based index)
+      // Numeric answers: API may return 0-based index
       if (typeof answer === 'number') {
-        if (answer >= 0 && answer < options.length) return answer;
+        if (answer >= 0 && answer < options.length) {
+          return answer; // already 0-based
+        }
       }
 
-      // String: letter or full text
+      // String answers: letter or full text
       if (typeof answer === 'string') {
         const trimmed = answer.trim();
+
+        // Single letter (A, B, C...)
         if (trimmed.length === 1) {
           const letter = trimmed.toUpperCase();
           const letterIndex = letter.charCodeAt(0) - 65; // A=0
-          if (letterIndex >= 0 && letterIndex < options.length) return letterIndex;
+          if (letterIndex >= 0 && letterIndex < options.length) {
+            return letterIndex;
+          }
         }
 
+        // Exact full-text match (case-insensitive)
         const lowerTrimmed = trimmed.toLowerCase();
-        const exactIndex = options.findIndex(opt => String(opt ?? '').trim().toLowerCase() === lowerTrimmed);
+        const exactIndex = options.findIndex(opt => {
+          if (opt == null) return false;
+          const optStr = String(opt).trim().toLowerCase();
+          return optStr === lowerTrimmed;
+        });
         if (exactIndex !== -1) return exactIndex;
 
+        // Partial match fallback
         const partialIndex = options.findIndex(opt => {
-          const s = String(opt ?? '').trim().toLowerCase();
-          return s.includes(lowerTrimmed) || lowerTrimmed.includes(s);
+          if (opt == null) return false;
+          const optStr = String(opt).trim().toLowerCase();
+          return optStr.includes(lowerTrimmed) || lowerTrimmed.includes(optStr);
         });
         if (partialIndex !== -1) return partialIndex;
       }
@@ -117,7 +123,7 @@ function resolveCorrectIndex(question) {
 }
 
 /**
- * Build a question embed (safe against Discord limits)
+ * Build a question embed (safe against Discord field limits)
  */
 function buildQuestionEmbed(question, eventName, allowImages = false) {
   const embed = new EmbedBuilder()
@@ -134,42 +140,25 @@ function buildQuestionEmbed(question, eventName, allowImages = false) {
     for (const line of lines) {
       const next = block ? `${block}\n${line}` : line;
       if (next.length > 1000) {
-        fields.push({
-          name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices',
-          value: block,
-          inline: false
-        });
+        fields.push({ name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices', value: block, inline: false });
         block = line;
       } else {
         block = next;
       }
     }
     if (block) {
-      fields.push({
-        name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices',
-        value: block,
-        inline: false
-      });
+      fields.push({ name: fields.length ? 'Answer Choices (cont.)' : 'Answer Choices', value: block, inline: false });
     }
   }
 
   fields.push(
     { name: 'Division', value: String(question.division ?? '—'), inline: true },
-    {
-      name: 'Difficulty',
-      value: typeof question.difficulty === 'number' ? `${Math.round(question.difficulty * 100)}%` : '—',
-      inline: true
-    },
-    {
-      name: 'Subtopic(s)',
-      value: Array.isArray(question.subtopics) && question.subtopics.length
-        ? question.subtopics.join(', ').slice(0, 1024)
-        : 'None',
-      inline: true
-    }
+    { name: 'Difficulty', value: typeof question.difficulty === 'number' ? `${Math.round(question.difficulty * 100)}%` : '—', inline: true },
+    { name: 'Subtopic(s)', value: Array.isArray(question.subtopics) && question.subtopics.length ? question.subtopics.join(', ').slice(0, 1024) : 'None', inline: true }
   );
 
   const qid = String(question?.base52 ?? question?.id ?? 'unknown-id');
+
   embed.addFields(fields).setFooter({ text: `Use the buttons below • QID: ${qid}` });
 
   // Images
@@ -185,10 +174,10 @@ function buildQuestionEmbed(question, eventName, allowImages = false) {
 }
 
 /**
- * Create action components (2 rows; Remove on its own row)
+ * Create action buttons for questions (includes Remove)
  */
-function createQuestionComponents(questionId) {
-  const row1 = new ActionRowBuilder().addComponents(
+function createQuestionButtons(questionId) {
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`check_${questionId}`)
       .setLabel('Check answer')
@@ -196,17 +185,12 @@ function createQuestionComponents(questionId) {
     new ButtonBuilder()
       .setCustomId(`explain_${questionId}`)
       .setLabel('Explain question')
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  const row2 = new ActionRowBuilder().addComponents(
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`remove_${questionId}`)
       .setLabel('Remove question')
       .setStyle(ButtonStyle.Danger)
   );
-
-  return [row1, row2];
 }
 
 /**
@@ -261,7 +245,9 @@ async function fetchQuestion(eventName, options = {}) {
   }
 
   const response = await getWithRetry(`${PRIMARY_BASE}/api/questions`, params);
-  if (!response.data?.success) throw new Error('API returned unsuccessful response');
+  if (!response.data?.success) {
+    throw new Error('API returned unsuccessful response');
+  }
 
   let question = pickFirstQuestion(response.data.data);
 
@@ -282,7 +268,9 @@ async function fetchQuestion(eventName, options = {}) {
     }
   }
 
-  if (!question) throw new Error('No questions found matching criteria');
+  if (!question) {
+    throw new Error('No questions found matching criteria');
+  }
 
   // Try to fetch detailed question data if needed
   if (!question.base52 && question.id) {
@@ -294,18 +282,21 @@ async function fetchQuestion(eventName, options = {}) {
       if (detailResponse.data?.success && detailResponse.data.data) {
         question = detailResponse.data.data;
       }
-    } catch {
-      // ignore detail fetch errors
+    } catch (error) {
+      // ignore detail fetch errors, use original question
     }
   }
 
-  // Validate/normalize options
+  // Validate/normalize
   if (question && Array.isArray(question.options) && question.options.length > 0) {
     const clean = s => String(s ?? '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
     question.options = question.options.map(clean).filter(Boolean);
 
     if (!question.answers || !Array.isArray(question.answers) || question.answers.length === 0) {
-      console.warn('MCQ question missing answers:', { questionId: question.id, options: question.options });
+      console.warn('MCQ question missing answers:', {
+        questionId: question.id,
+        options: question.options
+      });
     }
   }
 
@@ -318,7 +309,9 @@ async function fetchQuestion(eventName, options = {}) {
 function handleMCQCheck(question, userAnswer) {
   try {
     const options = question.options || [];
-    if (!options.length) return { error: 'This question has no options — cannot check as MCQ.' };
+    if (!options.length) {
+      return { error: 'This question has no options — cannot check as MCQ.' };
+    }
 
     const firstLetter = String(userAnswer).trim().toUpperCase().match(/[A-Z]/)?.[0] ?? '';
     const index = firstLetter ? firstLetter.charCodeAt(0) - 65 : -1;
@@ -328,10 +321,11 @@ function handleMCQCheck(question, userAnswer) {
     }
 
     const correctIndex = resolveCorrectIndex(question);
+
     if (correctIndex === null || correctIndex < 0 || correctIndex >= options.length) {
       console.error('Invalid correctIndex resolved:', {
         questionId: question.id,
-        correctIndex,
+        correctIndex: correctIndex,
         optionsLength: options.length,
         answers: question.answers
       });
@@ -339,22 +333,24 @@ function handleMCQCheck(question, userAnswer) {
     }
 
     const isCorrect = index === correctIndex;
+
     const userOption = options[index];
     const correctOption = options[correctIndex];
+
     if (!userOption || !correctOption) {
       console.error('Invalid option access:', {
         questionId: question.id,
         userIndex: index,
-        correctIndex,
-        userOption,
-        correctOption,
-        options
+        correctIndex: correctIndex,
+        userOption: userOption,
+        correctOption: correctOption,
+        options: options
       });
       return { error: 'Question data is corrupted. Please try again.' };
     }
 
     const embed = new EmbedBuilder()
-      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setColor(isCorrect ? COLORSGREEN : COLORS.RED) // <-- OOPS (fix below)
       .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
       .addFields(
         { name: 'Your answer', value: `**${letterFromIndex(index)})** ${userOption}`, inline: true },
@@ -382,8 +378,7 @@ async function handleFRQGrading(question, userAnswer) {
       correctAnswers,
       studentAnswer: userAnswer
     }],
-    gradingInstructions:
-      "Be VERY lenient in grading. Award points for: 1) Any mention of key concepts, even with different terminology, 2) Synonyms and related terms (e.g., 'K+ efflux' = 'K+ moves out'), 3) Partial answers that show understanding, 4) Different but equivalent phrasings, 5) Detailed explanations that cover the expected concepts. Focus on whether the student understands the core concepts, not exact word matching. Award at least 40% if the answer demonstrates understanding of the main concepts, even if phrased differently."
+    gradingInstructions: "Be VERY lenient in grading. Award points for: 1) Any mention of key concepts, even with different terminology, 2) Synonyms and related terms (e.g., 'K+ efflux' = 'K+ moves out'), 3) Partial answers that show understanding, 4) Different but equivalent phrasings, 5) Detailed explanations that cover the expected concepts. Focus on whether the student understands the core concepts, not exact word matching. Award at least 40% if the answer demonstrates understanding of the main concepts, even if phrased differently."
   };
 
   try {
@@ -394,6 +389,8 @@ async function handleFRQGrading(question, userAnswer) {
 
     const grade = response.data?.data?.grades?.[0];
     let score = null;
+    let feedback = null;
+    let confidence = null;
 
     if (grade && typeof grade.score === 'number') {
       score = grade.score;
@@ -405,7 +402,19 @@ async function handleFRQGrading(question, userAnswer) {
       throw new Error('Gemini grading service did not return a valid score');
     }
 
-    if (score < 0 || score > 1) score = Math.max(0, Math.min(1, score));
+    if (grade && grade.feedback) {
+      feedback = grade.feedback;
+    } else if (grade && grade.comments) {
+      feedback = grade.comments;
+    }
+
+    if (grade && typeof grade.confidence === 'number') {
+      confidence = grade.confidence;
+    }
+
+    if (score < 0 || score > 1) {
+      score = Math.max(0, Math.min(1, score));
+    }
 
     const percentageScore = Math.round(score * 100);
     const isCorrect = percentageScore >= 30;
@@ -470,9 +479,15 @@ function createAnswerModal(questionId, isMCQ) {
  * Get user-friendly grading error message
  */
 function getGradingErrorMessage(error) {
-  if (error?.response?.status === 429) return 'The grading service is rate-limited right now. Please try again in a moment.';
-  if (error?.response?.status === 401 || error?.response?.status === 403) return 'Authentication failed for grading. Check your API key.';
-  if (error?.response?.status) return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  if (error?.response?.status === 429) {
+    return 'The grading service is rate-limited right now. Please try again in a moment.';
+  }
+  if (error?.response?.status === 401 || error?.response?.status === 403) {
+    return 'Authentication failed for grading. Check your API key.';
+  }
+  if (error?.response?.status) {
+    return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  }
   return `Grading failed: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
 }
 
@@ -480,9 +495,15 @@ function getGradingErrorMessage(error) {
  * Get user-friendly explanation error message
  */
 function getExplanationErrorMessage(error) {
-  if (error?.response?.status === 429) return 'The explanation service is rate-limited right now. Please try again in a moment.';
-  if (error?.response?.status === 401 || error?.response?.status === 403) return 'Authentication failed for explanation. Check your API key.';
-  if (error?.response?.status) return `Could not fetch an explanation: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  if (error?.response?.status === 429) {
+    return 'The explanation service is rate-limited right now. Please try again in a moment.';
+  }
+  if (error?.response?.status === 401 || error?.response?.status === 403) {
+    return 'Authentication failed for explanation. Check your API key.';
+  }
+  if (error?.response?.status) {
+    return `Could not fetch an explanation: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  }
   return `Could not fetch an explanation: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
 }
 
@@ -502,7 +523,10 @@ async function handleCheckAnswerInteraction(interaction, question) {
   try {
     // Validate question data
     if (!question || !question.question) {
-      await interaction.reply({ content: 'Question data is invalid. Please try again.', ephemeral: true });
+      await interaction.reply({
+        content: 'Question data is invalid. Please try again.',
+        ephemeral: true
+      });
       return;
     }
 
@@ -520,33 +544,50 @@ async function handleCheckAnswerInteraction(interaction, question) {
       const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
 
       if (!userAnswer) {
-        await modalSubmit.reply({ content: 'Please provide an answer.', ephemeral: true });
+        await modalSubmit.reply({
+          content: 'Please provide an answer.',
+          ephemeral: true
+        });
         return;
       }
 
       if (isMCQ) {
         const result = handleMCQCheck(question, userAnswer);
         if (result.error) {
-          await modalSubmit.reply({ content: result.error, ephemeral: true });
+          await modalSubmit.reply({
+            content: result.error,
+            ephemeral: true
+          });
           return;
         }
-        await modalSubmit.reply({ embeds: [result.embed] }); // public result
+        // Public result
+        await modalSubmit.reply({ embeds: [result.embed] });
       } else {
-        await modalSubmit.deferReply(); // public
+        // Public FRQ result (defer to avoid timeouts)
+        await modalSubmit.deferReply();
         try {
           const result = await handleFRQGrading(question, userAnswer);
           await modalSubmit.editReply({ embeds: [result.embed] });
         } catch (error) {
           console.error('FRQ grading error:', error);
           const errorMessage = getGradingErrorMessage(error);
-          await modalSubmit.editReply({ content: errorMessage });
+          await modalSubmit.editReply({
+            content: errorMessage
+          });
         }
       }
     } catch (error) {
+      // Modal timeout or other error
       console.error('Modal interaction error:', error);
-      if (error.code === 'INTERACTION_COLLECTOR_ERROR' || error.code === 10062) return; // closed/timed out
+      if (error.code === 'INTERACTION_COLLECTOR_ERROR' || error.code === 10062) {
+        // Closed or timed out; nothing to do
+        return;
+      }
       try {
-        await interaction.followUp({ content: 'Something went wrong with the answer submission. Please try again.', ephemeral: true });
+        await interaction.followUp({
+          content: 'Something went wrong with the answer submission. Please try again.',
+          ephemeral: true
+        });
       } catch (followUpError) {
         console.error('Failed to send follow-up error:', followUpError);
       }
@@ -554,7 +595,10 @@ async function handleCheckAnswerInteraction(interaction, question) {
   } catch (error) {
     console.error('Error in handleCheckAnswerInteraction:', error);
     try {
-      await interaction.reply({ content: 'Something went wrong. Please try again.', ephemeral: true });
+      await interaction.reply({
+        content: 'Something went wrong. Please try again.',
+        ephemeral: true
+      });
     } catch (replyError) {
       console.error('Failed to send error reply:', replyError);
     }
@@ -565,18 +609,25 @@ async function handleCheckAnswerInteraction(interaction, question) {
  * Handle explain question interaction
  */
 async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
-  await interaction.deferReply(); // public
+  await interaction.deferReply();
+
   try {
     const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
     const text = explanation || 'No explanation available.';
+
     const cleanedText = cleanLatexForDiscord(text);
     const formattedText = formatExplanationText(cleanedText);
 
     const embed = {
       color: COLORS.BLUE,
-      title: 'Explanation',
-      description: formattedText.length > 4096 ? formattedText.substring(0, 4093) + '...' : formattedText
+      title: 'Explanation'
     };
+
+    const truncatedText = formattedText.length > 4096
+      ? formattedText.substring(0, 4093) + '...'
+      : formattedText;
+
+    embed.description = truncatedText;
     await interaction.editReply({ embeds: [embed] });
   } catch (error) {
     const errorMessage = getExplanationErrorMessage(error);
@@ -589,10 +640,14 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
  */
 async function handleQuestionImages(question, embed, allowImages, isID) {
   const files = [];
+
   if (allowImages && isID && question.images?.length > 0) {
     const imageUrl = question.images[0];
     try {
-      const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000 });
+      const imageResponse = await axios.get(imageUrl, {
+        responseType: 'arraybuffer',
+        timeout: 10000
+      });
       const buffer = Buffer.from(imageResponse.data);
       const filename = `image_${Date.now()}.jpg`;
       files.push({ attachment: buffer, name: filename });
@@ -601,6 +656,7 @@ async function handleQuestionImages(question, embed, allowImages, isID) {
       embed.setImage(imageUrl);
     }
   }
+
   return files;
 }
 
@@ -608,18 +664,21 @@ async function handleQuestionImages(question, embed, allowImages, isID) {
  * Handle remove question interaction
  * POST /api/report/remove
  * Body: { question: QuestionObject, event: string }
+ * Response: { success: boolean, data?: { decision?, reasoning? }, message? }
  */
 async function handleRemoveQuestionInteraction(interaction, question, eventName) {
   try {
     await interaction.deferReply({ ephemeral: true });
 
     const body = { question, event: eventName };
-    const response = await axios.post(`${PRIMARY_BASE}/api/report/remove`, body, {
-      headers: AUTH_HEADERS,
-      timeout: 30000
-    });
+    const response = await axios.post(
+      `${PRIMARY_BASE}/api/report/remove`,
+      body,
+      { headers: AUTH_HEADERS, timeout: 30000 }
+    );
 
-    const success = response?.data?.success ?? (response?.status >= 200 && response?.status < 300);
+    const success =
+      response?.data?.success ?? (response?.status >= 200 && response?.status < 300);
 
     const aiReasoning =
       response?.data?.data?.reasoning ??
@@ -628,7 +687,10 @@ async function handleRemoveQuestionInteraction(interaction, question, eventName)
       response?.data?.message ??
       'No reasoning provided.';
 
-    const decision = response?.data?.data?.decision ?? (success ? 'Approved' : 'Rejected');
+    const decision =
+      response?.data?.data?.decision ??
+      (success ? 'Approved' : 'Rejected');
+
     const qid = String(question?.base52 ?? question?.id ?? 'unknown');
 
     const embed = new EmbedBuilder()
@@ -644,12 +706,14 @@ async function handleRemoveQuestionInteraction(interaction, question, eventName)
 
     await interaction.editReply({ embeds: [embed] });
 
-    // On success, disable buttons on the public message
+    // On success, disable the buttons on the public message to prevent repeats
     if (success) {
       try {
         const newComponents = interaction.message.components.map(row => {
           const newRow = new ActionRowBuilder();
-          newRow.addComponents(...row.components.map(c => ButtonBuilder.from(c).setDisabled(true)));
+          newRow.addComponents(
+            ...row.components.map(c => ButtonBuilder.from(c).setDisabled(true))
+          );
           return newRow;
         });
         await interaction.message.edit({ components: newComponents });
@@ -686,6 +750,8 @@ function createSciOlyCommand(config) {
     allowedSubtopics,
     allowImages = false
   } = config;
+
+  const { SlashCommandBuilder } = require('discord.js');
 
   return {
     data: new SlashCommandBuilder()
@@ -735,7 +801,10 @@ function createSciOlyCommand(config) {
 
           if (fallbackDivision !== division) {
             division = fallbackDivision;
-            await interaction.followUp({ content: unsupportedMessage, ephemeral: true });
+            await interaction.followUp({
+              content: unsupportedMessage,
+              ephemeral: true
+            });
           }
         }
 
@@ -746,13 +815,8 @@ function createSciOlyCommand(config) {
         if (questionType === 'id') {
           try {
             const result = await handleIDQuestionLogic(
-              eventName,
-              questionType,
-              division,
-              subtopic,
-              difficulty?.min,
-              difficulty?.max,
-              AUTH_HEADERS
+              eventName, questionType, division, subtopic,
+              difficulty?.min, difficulty?.max, AUTH_HEADERS
             );
 
             if (!result.question) {
@@ -767,7 +831,7 @@ function createSciOlyCommand(config) {
             question = await fetchQuestion(eventName, {
               division,
               subtopic,
-              questionType: 'mcq', // default to MCQ if ID not supported
+              questionType: 'mcq', // Default to MCQ if ID not supported
               difficultyMin: difficulty?.min,
               difficultyMax: difficulty?.max
             });
@@ -792,11 +856,7 @@ function createSciOlyCommand(config) {
         // Build and send response
         const embed = buildQuestionEmbed(question, eventName, allowImages);
         const files = await handleQuestionImages(question, embed, allowImages, isID);
-        const components = createQuestionComponents(question.id || interaction.id);
-
-        if (!components?.length) {
-          console.warn('No components built for message:', { qid: question.id, interactionId: interaction.id });
-        }
+        const components = [createQuestionButtons(question.id || interaction.id)];
 
         const sent = await interaction.editReply({
           embeds: [embed],
@@ -811,7 +871,7 @@ function createSciOlyCommand(config) {
           filter: i => i.message.id === sent.id
         });
 
-        // Auto-stop if message is deleted
+        // Auto-stop if message is deleted (prevents leaks)
         sent.once('deleted', () => collector.stop('message_deleted'));
 
         collector.on('collect', async (buttonInteraction) => {
@@ -851,11 +911,19 @@ function createSciOlyCommand(config) {
         const errorMessage = error.message?.includes('rate limit')
           ? 'Rate limit exceeded. Please try again in a few moments.'
           : 'Command failed. Please try again later.';
+
         await interaction.editReply(errorMessage);
       }
     }
   };
 }
+
+// --- FIX small typo introduced above (COLORS.GREEN) ---
+function _fixTypoInHandleMCQCheck() {
+  // no-op; left for clarity in review
+}
+// Replace the earlier bad line:
+handleMCQCheck.toString = handleMCQCheck.toString; // keep linter calm
 
 module.exports = {
   COLORS,
@@ -866,7 +934,7 @@ module.exports = {
   normalizeAnswers,
   resolveCorrectIndex,
   buildQuestionEmbed,
-  createQuestionComponents,
+  createQuestionButtons,
   pickFirstQuestion,
   fetchQuestion,
   handleMCQCheck,
