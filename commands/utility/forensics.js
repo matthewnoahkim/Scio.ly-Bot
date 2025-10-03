@@ -4,8 +4,8 @@ const { createSciOlyCommand } = require('../../shared-command-utils');
 const COMMAND_NAME = 'forensics';
 const EVENT_NAME = 'Forensics';
 const DIVISIONS = ['C'];
-const ALLOWED_SUBTOPICS = ['Evidence Analysis', 'Fingerprints', 'DNA', 'Toxicology', 'Crime Scene'];
-const ALLOW_IMAGES = false;
+const ALLOWED_SUBTOPICS = ['Evidence Analysis','Fingerprints','DNA','Toxicology','Crime Scene'];
+const ALLOW_IMAGES = true;
 
 module.exports = createSciOlyCommand({
   commandName: COMMAND_NAME,

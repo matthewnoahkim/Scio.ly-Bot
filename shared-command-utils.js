@@ -44,8 +44,7 @@ const COLORS = {
 /** Make a short ASCII-safe id for Discord custom_id (<= 100 chars) */
 function makeSafeId(raw) {
   const s = String(raw ?? '').replace(/[^\x20-\x7E]/g, ''); // strip non-ASCII
-  // keep last 48 chars to preserve uniqueness while staying well under 100 total
-  return s.slice(-48) || 'qid';
+  return s.slice(-48) || 'qid'; // keep final 48 chars
 }
 
 /** Remove null/undefined values from an object */
@@ -177,7 +176,7 @@ function buildQuestionEmbed(question, eventName, allowImages = false) {
   return embed;
 }
 
-/** Create action components (2 rows; Remove on its own row) */
+/** Create action components (Delete on its own row) */
 function createQuestionComponents(rawId) {
   const safeId = makeSafeId(rawId);
 
@@ -187,10 +186,18 @@ function createQuestionComponents(rawId) {
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`remove_${safeId}`).setLabel('Remove question').setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(`delete_${safeId}`).setLabel('Delete question').setStyle(ButtonStyle.Danger)
   );
 
   return [row1, row2];
+}
+
+/** Ephemeral Yes/No buttons row for delete confirmation */
+function buildDeleteConfirmRow(safeId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`confirm_yes_${safeId}`).setLabel('Yes, delete it').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`confirm_no_${safeId}`).setLabel('No, keep it').setStyle(ButtonStyle.Secondary)
+  );
 }
 
 /** Pick the first question from API response data */
@@ -202,7 +209,30 @@ function pickFirstQuestion(data) {
   return null;
 }
 
-// ---------- API fetch ----------
+// ---------- API helpers ----------
+
+/** Actual delete (no preview) + returns reasoning/decision */
+async function deleteQuestion(question, eventName) {
+  const body = { question, event: eventName };
+  const res = await axios.post(`${PRIMARY_BASE}/api/report/remove`, body, {
+    headers: AUTH_HEADERS,
+    timeout: 30000
+  });
+
+  const success = res?.data?.success ?? (res?.status >= 200 && res?.status < 300);
+  const decision =
+    res?.data?.data?.decision ??
+    (success ? 'Approved' : 'Rejected');
+
+  const reasoning =
+    res?.data?.data?.reasoning ??
+    res?.data?.data?.ai_reasoning ??
+    res?.data?.reason ??
+    res?.data?.message ??
+    (success ? 'Removed.' : 'Not removed.');
+
+  return { success, decision, reasoning, raw: res?.data };
+}
 
 /** Fetch a question (with light retry) */
 async function fetchQuestion(eventName, options = {}) {
@@ -434,178 +464,124 @@ const DIFFICULTY_MAP = {
   'Very Hard (80-100%)': { min: 0.8, max: 1 }
 };
 
-// ---------- button interactions ----------
+// ---------- delete flow (ephemeral Yes/No; AI response after YES) ----------
 
-/** Handle check answer interaction */
-async function handleCheckAnswerInteraction(interaction, question) {
+/** Handle the DELETE button -> ephemeral confirm -> Yes/No -> call AI -> show AI response */
+async function handleDeleteQuestionInteraction(buttonInteraction, safeId, question, eventName) {
   try {
-    if (!question || !question.question) {
-      await interaction.reply({ content: 'Question data is invalid. Please try again.', ephemeral: true });
-      return;
-    }
+    // 1) Send ephemeral "Are you sure?" with Yes/No every time (no preview)
+    await buttonInteraction.deferReply({ ephemeral: true });
 
-    const isMCQ = Array.isArray(question.options) && question.options.length > 0;
-    const modal = createAnswerModal(interaction.message.id, isMCQ);
-    await interaction.showModal(modal);
-
-    try {
-      const modalSubmit = await interaction.awaitModalSubmit({
-        time: 5 * 60 * 1000,
-        filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
-      });
-
-      const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
-      if (!userAnswer) {
-        await modalSubmit.reply({ content: 'Please provide an answer.', ephemeral: true });
-        return;
-      }
-
-      if (isMCQ) {
-        const result = handleMCQCheck(question, userAnswer);
-        if (result.error) {
-          await modalSubmit.reply({ content: result.error, ephemeral: true });
-          return;
-        }
-        await modalSubmit.reply({ embeds: [result.embed] }); // public result
-      } else {
-        await modalSubmit.deferReply(); // public
-        try {
-          const result = await handleFRQGrading(question, userAnswer);
-          await modalSubmit.editReply({ embeds: [result.embed] });
-        } catch (error) {
-          const errorMessage = getGradingErrorMessage(error);
-          await modalSubmit.editReply({ content: errorMessage });
-        }
-      }
-    } catch (error) {
-      if (error.code === 'INTERACTION_COLLECTOR_ERROR' || error.code === 10062) return; // closed/timed out
-      try {
-        await interaction.followUp({ content: 'Something went wrong with the answer submission. Please try again.', ephemeral: true });
-      } catch (followUpError) {
-        console.error('Failed to send follow-up error:', followUpError);
-      }
-    }
-  } catch (error) {
-    console.error('Error in handleCheckAnswerInteraction:', error);
-    try {
-      await interaction.reply({ content: 'Something went wrong. Please try again.', ephemeral: true });
-    } catch (replyError) {
-      console.error('Failed to send error reply:', replyError);
-    }
-  }
-}
-
-/** Handle explain question interaction */
-async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
-  await interaction.deferReply(); // public
-  try {
-    const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
-    const text = explanation || 'No explanation available.';
-    const cleanedText = cleanLatexForDiscord(text);
-    const formattedText = formatExplanationText(cleanedText);
-
-    const embed = new EmbedBuilder()
-      .setColor(COLORS.BLUE)
-      .setTitle('Explanation')
-      .setDescription(formattedText.length > 4096 ? formattedText.substring(0, 4093) + '...' : formattedText);
-
-    await interaction.editReply({ embeds: [embed] });
-  } catch (error) {
-    const errorMessage = getExplanationErrorMessage(error);
-    await interaction.editReply(errorMessage);
-  }
-}
-
-/** Handle image processing for ID questions */
-async function handleQuestionImages(question, embed, allowImages, isID) {
-  const files = [];
-  if (allowImages && isID && question.images?.length > 0) {
-    const imageUrl = question.images[0];
-    try {
-      const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000 });
-      const buffer = Buffer.from(imageResponse.data);
-      const filename = `image_${Date.now()}.jpg`;
-      files.push({ attachment: buffer, name: filename });
-      embed.setImage(`attachment://${filename}`);
-    } catch {
-      embed.setImage(imageUrl);
-    }
-  }
-  return files;
-}
-
-/** Handle remove question interaction (POST /api/report/remove) */
-async function handleRemoveQuestionInteraction(interaction, question, eventName) {
-  try {
-    await interaction.deferReply({ ephemeral: true });
-
-    const body = { question, event: eventName };
-    const response = await axios.post(`${PRIMARY_BASE}/api/report/remove`, body, {
-      headers: AUTH_HEADERS,
-      timeout: 30000
-    });
-
-    const success = response?.data?.success ?? (response?.status >= 200 && response?.status < 300);
-    const aiReasoning =
-      response?.data?.data?.reasoning ??
-      response?.data?.data?.ai_reasoning ??
-      response?.data?.reason ??
-      response?.data?.message ??
-      'No reasoning provided.';
-    const decision = response?.data?.data?.decision ?? (success ? 'Approved' : 'Rejected');
     const qid = String(question?.base52 ?? question?.id ?? 'unknown');
-
-    const embed = new EmbedBuilder()
-      .setColor(success ? COLORS.GREEN : COLORS.RED)
-      .setTitle(success ? 'Question removed' : 'Removal rejected')
-      .setDescription(`**AI decision:** ${decision}`)
+    const confirmEmbed = new EmbedBuilder()
+      .setColor(COLORS.BLUE)
+      .setTitle('Delete question?')
+      .setDescription('Are you sure you want to delete this question?')
       .addFields(
         { name: 'Event', value: String(eventName), inline: true },
-        { name: 'Question ID', value: qid, inline: true },
-        { name: 'AI reasoning', value: String(aiReasoning).slice(0, 1024) }
-      )
-      .setFooter({ text: 'Thanks for improving question quality!' });
+        { name: 'Question ID', value: qid, inline: true }
+      );
 
-    await interaction.editReply({ embeds: [embed] });
+    const ephemeralMsg = await buttonInteraction.editReply({
+      embeds: [confirmEmbed],
+      components: [buildDeleteConfirmRow(safeId)]
+    });
 
-    if (success) {
+    // 2) Collect Yes/No on ephemeral message
+    const confirmCollector = ephemeralMsg.createMessageComponentCollector({
+      componentType: ComponentType.Button,
+      time: 60 * 1000,
+      filter: i => i.user.id === buttonInteraction.user.id
+    });
+
+    confirmCollector.on('collect', async (i) => {
       try {
-        // Disable all buttons on the original public message
-        const newComponents = interaction.message.components.map(row => {
-          const newRow = new ActionRowBuilder();
-          for (const comp of row.components) {
-            if (comp.type === 2) {
-              newRow.addComponents(
-                new ButtonBuilder()
-                  .setCustomId(comp.customId ?? 'disabled')
-                  .setLabel(comp.label ?? 'Button')
-                  .setStyle(comp.style ?? ButtonStyle.Secondary)
-                  .setDisabled(true)
-              );
+        if (i.customId === `confirm_no_${safeId}`) {
+          await i.update({ components: [] });
+          await buttonInteraction.followUp({ content: 'Deletion cancelled.', ephemeral: true });
+          confirmCollector.stop('cancelled');
+          return;
+        }
+
+        if (i.customId === `confirm_yes_${safeId}`) {
+          // Disable buttons to prevent double submit
+          await i.update({ components: [] });
+
+          // 3) Perform actual deletion (AI validated server-side)
+          let result;
+          try {
+            result = await deleteQuestion(question, eventName);
+          } catch (err) {
+            console.error('Delete request error:', err);
+            await buttonInteraction.followUp({
+              content: 'Deletion failed. Please try again shortly.',
+              ephemeral: true
+            });
+            confirmCollector.stop('error');
+            return;
+          }
+
+          // 4) Send second ephemeral message with AI response (always)
+          const responseEmbed = new EmbedBuilder()
+            .setColor(result.success ? COLORS.GREEN : COLORS.RED)
+            .setTitle(result.success ? 'Question deleted' : 'Deletion rejected')
+            .addFields(
+              { name: 'AI decision', value: String(result.decision) },
+              { name: 'AI reasoning', value: String(result.reasoning).slice(0, 1024) }
+            );
+
+          await buttonInteraction.followUp({ embeds: [responseEmbed], ephemeral: true });
+
+          // 5) If success, disable the original public buttons
+          if (result.success) {
+            try {
+              const newComponents = buttonInteraction.message.components.map(row => {
+                const newRow = new ActionRowBuilder();
+                for (const comp of row.components) {
+                  if (comp.type === 2) {
+                    newRow.addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(comp.customId ?? 'disabled')
+                        .setLabel(comp.label ?? 'Button')
+                        .setStyle(comp.style ?? ButtonStyle.Secondary)
+                        .setDisabled(true)
+                    );
+                  }
+                }
+                return newRow;
+              });
+              await buttonInteraction.message.edit({ components: newComponents });
+            } catch (e) {
+              console.error('Failed to disable public buttons after deletion:', e);
             }
           }
-          return newRow;
-        });
-        await interaction.message.edit({ components: newComponents });
-      } catch (e) {
-        console.error('Failed to disable buttons after removal:', e);
-      }
-    }
-  } catch (error) {
-    let msg = 'Removal failed. Please try again shortly.';
-    if (error?.response?.status === 429) msg = 'Removal service is rate-limited. Try again in a moment.';
-    else if ([401, 403].includes(error?.response?.status)) msg = 'Authentication failed. Check your API key.';
-    else if ([502, 503].includes(error?.response?.status)) msg = 'Service temporarily unavailable. Try again soon.';
-    else if (error?.code === 'ECONNABORTED') msg = 'Removal request timed out. The service may be busy.';
-    else if (error?.response?.status) msg = `Removal failed: HTTP ${error.response.status} ${error.response.statusText ?? ''}`.trim();
 
-    try {
-      await interaction.editReply({ content: msg });
-    } catch {
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: msg, ephemeral: true });
+          confirmCollector.stop('done');
+        }
+      } catch (err) {
+        console.error('Confirm interaction error:', err);
+        try {
+          if (!i.replied && !i.deferred) {
+            await i.reply({ content: 'Something went wrong handling your choice.', ephemeral: true });
+          }
+        } catch {}
       }
-    }
+    });
+
+    confirmCollector.on('end', async () => {
+      // Remove confirm buttons on timeout/end
+      try { await buttonInteraction.editReply({ components: [] }); } catch {}
+    });
+
+  } catch (err) {
+    console.error('handleDeleteQuestionInteraction error:', err);
+    try {
+      if (!buttonInteraction.replied && !buttonInteraction.deferred) {
+        await buttonInteraction.reply({ content: 'Something went wrong. Please try again.', ephemeral: true });
+      } else {
+        await buttonInteraction.followUp({ content: 'Something went wrong. Please try again.', ephemeral: true });
+      }
+    } catch {}
   }
 }
 
@@ -736,7 +712,7 @@ function createSciOlyCommand(config) {
           filter: i => i.message.id === sent.id
         });
 
-        // Cleanly stop collector if the message is deleted
+        // Stop on message delete
         const onDelete = (msg) => {
           if (msg.id === sent.id) {
             collector.stop('message_deleted');
@@ -759,8 +735,8 @@ function createSciOlyCommand(config) {
               await handleCheckAnswerInteraction(buttonInteraction, question);
             } else if (customId === `explain_${safeId}`) {
               await handleExplainQuestionInteraction(buttonInteraction, question, eventName, commandName);
-            } else if (customId === `remove_${safeId}`) {
-              await handleRemoveQuestionInteraction(buttonInteraction, question, eventName);
+            } else if (customId === `delete_${safeId}`) {
+              await handleDeleteQuestionInteraction(buttonInteraction, safeId, question, eventName);
             }
           } catch (err) {
             console.error('Button interaction error:', err);
@@ -795,6 +771,7 @@ module.exports = {
   resolveCorrectIndex,
   buildQuestionEmbed,
   createQuestionComponents,
+  buildDeleteConfirmRow,
   pickFirstQuestion,
   fetchQuestion,
   handleMCQCheck,
@@ -804,9 +781,7 @@ module.exports = {
   getExplanationWithRetry,
   getGradingErrorMessage,
   getExplanationErrorMessage,
-  handleCheckAnswerInteraction,
-  handleExplainQuestionInteraction,
-  handleQuestionImages,
-  handleRemoveQuestionInteraction,
+  deleteQuestion,
+  handleDeleteQuestionInteraction,
   createSciOlyCommand
 };

@@ -1,11 +1,11 @@
 const { createSciOlyCommand } = require('../../shared-command-utils');
 
 // Command configuration
-const COMMAND_NAME = 'waterqualityfreshwater';
-const EVENT_NAME = 'Water Quality - Freshwater';
+const COMMAND_NAME = 'machines';
+const EVENT_NAME = 'Machines';
 const DIVISIONS = ['B','C'];
-const ALLOWED_SUBTOPICS = ['PH','Dissolved Oxygen','Nutrients','Pollutants','Testing'];
-const ALLOW_IMAGES = true;
+const ALLOWED_SUBTOPICS = ['Simple Machines','Mechanical Advantage','Efficiency','Compound Machines','Design'];
+const ALLOW_IMAGES = false;
 
 module.exports = createSciOlyCommand({
   commandName: COMMAND_NAME,

@@ -4,7 +4,7 @@ const { createSciOlyCommand } = require('../../shared-command-utils');
 const COMMAND_NAME = 'solarsystem';
 const EVENT_NAME = 'Solar System';
 const DIVISIONS = ['B'];
-const ALLOWED_SUBTOPICS = ['Planets', 'Moons', 'Asteroids', 'Comets', 'Galaxies'];
+const ALLOWED_SUBTOPICS = ['Planets','Moons','Asteroids','Comets','Galaxies'];
 const ALLOW_IMAGES = false;
 
 module.exports = createSciOlyCommand({

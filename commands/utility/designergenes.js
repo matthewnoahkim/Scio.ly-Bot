@@ -4,8 +4,8 @@ const { createSciOlyCommand } = require('../../shared-command-utils');
 const COMMAND_NAME = 'designergenes';
 const EVENT_NAME = 'Designer Genes';
 const DIVISIONS = ['C'];
-const ALLOWED_SUBTOPICS = ['Genetics', 'DNA', 'Proteins', 'Evolution', 'Population Genetics'];
-const ALLOW_IMAGES = false;
+const ALLOWED_SUBTOPICS = ['Genetics','DNA','Proteins','Evolution','Population Genetics'];
+const ALLOW_IMAGES = true;
 
 module.exports = createSciOlyCommand({
   commandName: COMMAND_NAME,

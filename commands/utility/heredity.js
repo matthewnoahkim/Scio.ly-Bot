@@ -4,7 +4,7 @@ const { createSciOlyCommand } = require('../../shared-command-utils');
 const COMMAND_NAME = 'heredity';
 const EVENT_NAME = 'Heredity';
 const DIVISIONS = ['B'];
-const ALLOWED_SUBTOPICS = ['Genetics', 'DNA', 'Proteins', 'Evolution', 'Population Genetics'];
+const ALLOWED_SUBTOPICS = ['Genetics','DNA','Proteins','Evolution','Population Genetics'];
 const ALLOW_IMAGES = false;
 
 module.exports = createSciOlyCommand({

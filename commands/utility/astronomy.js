@@ -4,8 +4,8 @@ const { createSciOlyCommand } = require('../../shared-command-utils');
 const COMMAND_NAME = 'astronomy';
 const EVENT_NAME = 'Astronomy';
 const DIVISIONS = ['C'];
-const ALLOWED_SUBTOPICS = ['Solar System', 'Stars', 'Galaxies', 'Cosmology', 'Instruments'];
-const ALLOW_IMAGES = false;
+const ALLOWED_SUBTOPICS = ['Solar System','Stars','Galaxies','Cosmology','Instruments'];
+const ALLOW_IMAGES = true;
 
 module.exports = createSciOlyCommand({
   commandName: COMMAND_NAME,
