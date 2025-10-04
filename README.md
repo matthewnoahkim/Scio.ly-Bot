@@ -1,4 +1,4 @@
-# Scio.ly-Bot (Hylas, the Cat) - test
+# Scio.ly-Bot (Hylas, the Cat)
 
 > **A Science Olympiad study companion powered by scio.ly**
 
