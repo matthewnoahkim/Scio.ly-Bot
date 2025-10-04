@@ -414,13 +414,13 @@ function createAnswerModal(questionId, isMCQ) {
 async function handleCheckAnswerInteraction(interaction, question) {
   try {
     if (!question || !question.question) {
-      await interaction.reply({ content: 'Question data is invalid. Please try again.', flags: 64 });
+      await interaction.reply({ content: 'Question data is invalid. Please try again.', ephemeral: true });
       return;
     }
 
     const isMCQ = Array.isArray(question.options) && question.options.length > 0;
     const modal = createAnswerModal(interaction.message.id, isMCQ);
-    await interaction.showModal(modal);
+    await interaction.showModal(modal); // this acknowledges the button interaction
 
     try {
       const modalSubmit = await interaction.awaitModalSubmit({
@@ -430,14 +430,14 @@ async function handleCheckAnswerInteraction(interaction, question) {
 
       const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
       if (!userAnswer) {
-        await modalSubmit.reply({ content: 'Please provide an answer.', flags: 64 });
+        await modalSubmit.reply({ content: 'Please provide an answer.', ephemeral: true });
         return;
       }
 
       if (isMCQ) {
         const result = handleMCQCheck(question, userAnswer);
         if (result.error) {
-          await modalSubmit.reply({ content: result.error, flags: 64 });
+          await modalSubmit.reply({ content: result.error, ephemeral: true });
           return;
         }
         await modalSubmit.reply({ embeds: [result.embed] });
@@ -454,19 +454,20 @@ async function handleCheckAnswerInteraction(interaction, question) {
     } catch (err) {
       if (err.code === 'INTERACTION_COLLECTOR_ERROR' || err.code === 10062) return;
       try {
-        await interaction.followUp({ content: 'Something went wrong with the answer submission. Please try again.', flags: 64 });
+        await interaction.followUp({ content: 'Something went wrong with the answer submission. Please try again.', ephemeral: true });
       } catch {}
     }
   } catch (error) {
     console.error('Error in handleCheckAnswerInteraction:', error);
     try {
-      await interaction.reply({ content: 'Something went wrong. Please try again.', flags: 64 });
+      await interaction.reply({ content: 'Something went wrong. Please try again.', ephemeral: true });
     } catch {}
   }
 }
 
 /** Handle explain question interaction */
 async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
+  // Acknowledge fast
   await interaction.deferReply();
   try {
     const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
@@ -489,7 +490,7 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
 /** Handle the DELETE button -> ephemeral confirm -> Yes/No -> call AI -> show AI response */
 async function handleDeleteQuestionInteraction(buttonInteraction, safeId, question, eventName) {
   try {
-    // 1) Send ephemeral "Are you sure?" with Yes/No every time (no preview)
+    // 1) Send ephemeral "Are you sure?" with Yes/No (no preview)
     await buttonInteraction.deferReply({ ephemeral: true });
 
     const qid = String(question?.base52 ?? question?.id ?? 'unknown');
@@ -507,95 +508,89 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
       components: [buildDeleteConfirmRow(safeId)]
     });
 
-    // 2) Collect Yes/No on ephemeral message
-    const confirmCollector = ephemeralMsg.createMessageComponentCollector({
-      componentType: ComponentType.Button,
-      time: 60 * 1000,
-      filter: i => i.user.id === buttonInteraction.user.id
-    });
+    // 2) Await exactly one Yes/No click on the ephemeral message
+    const filter = (i) =>
+      i.user.id === buttonInteraction.user.id &&
+      (i.customId === `confirm_yes_${safeId}` || i.customId === `confirm_no_${safeId}`);
 
-    confirmCollector.on('collect', async (i) => {
+    let i;
+    try {
+      i = await ephemeralMsg.awaitMessageComponent({
+        time: 60 * 1000,
+        filter,
+        componentType: ComponentType.Button
+      });
+    } catch {
+      // Timeout: clean up buttons
+      try { await buttonInteraction.editReply({ components: [] }); } catch {}
+      await buttonInteraction.followUp({ content: 'Deletion timed out.', ephemeral: true });
+      return;
+    }
+
+    // ACK the click immediately
+    await i.deferUpdate();
+
+    if (i.customId === `confirm_no_${safeId}`) {
+      // Remove buttons and confirm cancel
+      try { await buttonInteraction.editReply({ components: [] }); } catch {}
+      await buttonInteraction.followUp({ content: 'Deletion cancelled.', ephemeral: true });
+      return;
+    }
+
+    // 3) Perform actual deletion (AI validated server-side)
+    let result;
+    try {
+      result = await deleteQuestion(question, eventName);
+    } catch (err) {
+      console.error('Delete request error:', err);
+      await buttonInteraction.followUp({
+        content: 'Deletion failed. Please try again shortly.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    // 4) Send second ephemeral message with AI response (always)
+    const responseEmbed = new EmbedBuilder()
+      .setColor(result.success ? COLORS.GREEN : COLORS.RED)
+      .setTitle(result.success ? 'Question deleted' : 'Deletion rejected')
+      .addFields(
+        { name: 'AI decision', value: String(result.decision) },
+        { name: 'AI reasoning', value: String(result.reasoning).slice(0, 1024) }
+      );
+
+    await buttonInteraction.followUp({ embeds: [responseEmbed], ephemeral: true });
+
+    // 5) If success, disable the original public buttons
+    if (result.success) {
       try {
-        if (i.customId === `confirm_no_${safeId}`) {
-          await i.update({ components: [] });
-          await buttonInteraction.followUp({ content: 'Deletion cancelled.', ephemeral: true });
-          confirmCollector.stop('cancelled');
-          return;
-        }
-
-        if (i.customId === `confirm_yes_${safeId}`) {
-          // Disable buttons to prevent double submit
-          await i.update({ components: [] });
-
-          // 3) Perform actual deletion (AI validated server-side)
-          let result;
-          try {
-            result = await deleteQuestion(question, eventName);
-          } catch (err) {
-            console.error('Delete request error:', err);
-            await buttonInteraction.followUp({
-              content: 'Deletion failed. Please try again shortly.',
-              ephemeral: true
-            });
-            confirmCollector.stop('error');
-            return;
-          }
-
-          // 4) Send second ephemeral message with AI response (always)
-          const responseEmbed = new EmbedBuilder()
-            .setColor(result.success ? COLORS.GREEN : COLORS.RED)
-            .setTitle(result.success ? 'Question deleted' : 'Deletion rejected')
-            .addFields(
-              { name: 'AI decision', value: String(result.decision) },
-              { name: 'AI reasoning', value: String(result.reasoning).slice(0, 1024) }
-            );
-
-          await buttonInteraction.followUp({ embeds: [responseEmbed], ephemeral: true });
-
-          // 5) If success, disable the original public buttons
-          if (result.success) {
-            try {
-              const rows = Array.isArray(buttonInteraction.message?.components)
-                ? buttonInteraction.message.components
-                : [];
-              const newComponents = rows.map(row => {
-                const newRow = new ActionRowBuilder();
-                const comps = Array.isArray(row?.components) ? row.components : [];
-                for (const comp of comps) {
-                  if (comp?.type === 2) {
-                    newRow.addComponents(
-                      new ButtonBuilder()
-                        .setCustomId(comp.customId ?? 'disabled')
-                        .setLabel(comp.label ?? 'Button')
-                        .setStyle(comp.style ?? ButtonStyle.Secondary)
-                        .setDisabled(true)
-                    );
-                  }
-                }
-                return newRow;
-              });
-              await buttonInteraction.message.edit({ components: newComponents });
-            } catch (e) {
-              console.error('Failed to disable public buttons after deletion:', e);
+        const rows = Array.isArray(buttonInteraction.message?.components)
+          ? buttonInteraction.message.components
+          : [];
+        const newComponents = rows.map(row => {
+          const newRow = new ActionRowBuilder();
+          const comps = Array.isArray(row?.components) ? row.components : [];
+          for (const comp of comps) {
+            if (comp?.type === 2) {
+              newRow.addComponents(
+                new ButtonBuilder()
+                  .setCustomId(comp.customId ?? 'disabled')
+                  .setLabel(comp.label ?? 'Button')
+                  .setStyle(comp.style ?? ButtonStyle.Secondary)
+                  .setDisabled(true)
+              );
             }
           }
-
-          confirmCollector.stop('done');
-        }
-      } catch (err) {
-        console.error('Confirm interaction error:', err);
-        try {
-          if (!i.replied && !i.deferred) {
-            await i.reply({ content: 'Something went wrong handling your choice.', ephemeral: true });
-          }
-        } catch {}
+          return newRow;
+        });
+        await buttonInteraction.message.edit({ components: newComponents });
+      } catch (e) {
+        console.error('Failed to disable public buttons after deletion:', e);
       }
-    });
+    }
 
-    confirmCollector.on('end', async () => {
-      // Remove confirm buttons on timeout/end
-      try { await buttonInteraction.editReply({ components: [] }); } catch {}
-    });
+    // 6) Remove the confirm buttons after handling
+    try { await buttonInteraction.editReply({ components: [] }); } catch {}
 
   } catch (err) {
     console.error('handleDeleteQuestionInteraction error:', err);
@@ -654,7 +649,7 @@ function createSciOlyCommand(config) {
 
     async execute(interaction) {
       try {
-        await interaction.deferReply();
+        await interaction.deferReply(); // ACK within 3s
 
         // Parse options with smart defaults
         let division = interaction.options.getString('division') || getDefaultDivision(eventName);
@@ -669,6 +664,7 @@ function createSciOlyCommand(config) {
           const unsupportedMessage = getUnsupportedMessage(eventName, division, questionType);
           if (fallbackDivision !== division) {
             division = fallbackDivision;
+            // followUp is fine after defer; ephemeral is supported
             await interaction.followUp({ content: unsupportedMessage, ephemeral: true });
           }
         }
@@ -732,7 +728,7 @@ function createSciOlyCommand(config) {
           ...(files.length > 0 && { files })
         });
 
-        // Collector for buttons
+        // Collector for the public buttons on the sent message
         const collector = sent.createMessageComponentCollector({
           componentType: ComponentType.Button,
           time: 30 * 60 * 1000,
@@ -803,12 +799,9 @@ module.exports = {
   fetchQuestion,
   handleQuestionImages,
   handleMCQCheck,
-  handleFRQGrading,
   createAnswerModal,
   letterFromIndex,
   getExplanationWithRetry,
-  getGradingErrorMessage: () => {},
-  getExplanationErrorMessage: () => {},
   handleCheckAnswerInteraction,
   handleExplainQuestionInteraction,
   deleteQuestion,
