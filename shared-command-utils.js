@@ -28,7 +28,8 @@ const {
   getUnsupportedMessage
 } = require('./event-capabilities');
 
-// Constants
+// ===================== Constants =====================
+
 const PRIMARY_BASE = 'https://scio.ly';
 const API_KEY = process.env.SCIO_API_KEY;
 
@@ -38,16 +39,23 @@ const COLORS = {
   GREEN: 0x3fbf7f,
   RED: 0xff5555
 };
+const MAX_CHOICES = 25; // Discord per-option hard limit
 
-// Discord hard limit for choices on a single option
-const MAX_CHOICES = 25;
+// Difficulty mapping used by all commands (MUST be defined before export)
+const DIFFICULTY_MAP = {
+  'Very Easy (0-19%)': { min: 0, max: 0.19 },
+  'Easy (20-39%)': { min: 0.2, max: 0.39 },
+  'Medium (40-59%)': { min: 0.4, max: 0.59 },
+  'Hard (60-79%)': { min: 0.6, max: 0.79 },
+  'Very Hard (80-100%)': { min: 0.8, max: 1 }
+};
 
-// ---------- small utilities ----------
+// ===================== Small utilities =====================
 
 /** Make a short ASCII-safe id for Discord custom_id (<= 100 chars) */
 function makeSafeId(raw) {
-  const s = String(raw ?? '').replace(/[^\x20-\x7E]/g, ''); // strip non-ASCII
-  return s.slice(-48) || 'qid'; // keep final 48 chars
+  const s = String(raw ?? '').replace(/[^\x20-\x7E]/g, '');
+  return s.slice(-48) || 'qid';
 }
 
 /** Remove null/undefined values from an object */
@@ -62,7 +70,7 @@ function normalizeAnswers(answers) {
   return answers.filter(a => a != null).map(a => (typeof a === 'string' ? a.trim() : a));
 }
 
-// ---------- answer resolution & embeds ----------
+// ===================== Answer resolution & embeds =====================
 
 /** Resolve the correct answer index for MCQ questions */
 function resolveCorrectIndex(question) {
@@ -78,30 +86,30 @@ function resolveCorrectIndex(question) {
     for (const answer of normalizedAnswers) {
       if (answer == null) continue;
 
-      // Numeric (assume 0-based index)
       if (typeof answer === 'number') {
-        if (answer >= 0 && answer < options.length) return answer;
+        if (answer >= 0 && answer < options.length) return answer; // already 0-based
       }
 
-      // String: letter or full text
       if (typeof answer === 'string') {
         const trimmed = answer.trim();
 
-        // A, B, C...
+        // A/B/C/D
         if (trimmed.length === 1) {
           const idx = trimmed.toUpperCase().charCodeAt(0) - 65;
           if (idx >= 0 && idx < options.length) return idx;
         }
 
+        // match full text (case-insensitive)
         const lower = trimmed.toLowerCase();
-        const exactIndex = options.findIndex(opt => String(opt ?? '').trim().toLowerCase() === lower);
-        if (exactIndex !== -1) return exactIndex;
+        const exact = options.findIndex(opt => String(opt ?? '').trim().toLowerCase() === lower);
+        if (exact !== -1) return exact;
 
-        const partialIndex = options.findIndex(opt => {
+        // partial tolerance
+        const partial = options.findIndex(opt => {
           const s = String(opt ?? '').trim().toLowerCase();
           return s.includes(lower) || lower.includes(s);
         });
-        if (partialIndex !== -1) return partialIndex;
+        if (partial !== -1) return partial;
       }
     }
 
@@ -212,7 +220,7 @@ function pickFirstQuestion(data) {
   return null;
 }
 
-// ---------- API helpers ----------
+// ===================== API helpers =====================
 
 /** Actual delete (no preview) + returns reasoning/decision */
 async function deleteQuestion(question, eventName) {
@@ -311,11 +319,9 @@ async function fetchQuestion(eventName, options = {}) {
   return question;
 }
 
-// ---------- interactions ----------
+// ===================== Interactions =====================
 
-/**
- * Handle image processing for ID questions (and regular images)
- */
+/** Handle image processing for ID questions (and regular images) */
 async function handleQuestionImages(question, embed, allowImages, isID) {
   const files = [];
   try {
@@ -324,7 +330,7 @@ async function handleQuestionImages(question, embed, allowImages, isID) {
     const url = question?.imageData || (Array.isArray(question?.images) && question.images[0]);
     if (!url) return files;
 
-    // For ID questions, try attaching the image as a file (nicer cache in Discord)
+    // For ID questions, try attaching the image as a file
     if (isID) {
       try {
         const imageResponse = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
@@ -334,7 +340,7 @@ async function handleQuestionImages(question, embed, allowImages, isID) {
         embed.setImage(`attachment://${filename}`);
         return files;
       } catch {
-        // Fallback to URL
+        // fallback to URL
       }
     }
 
@@ -391,6 +397,68 @@ function handleMCQCheck(question, userAnswer) {
   }
 }
 
+/** Handle FRQ answer grading */
+async function handleFRQGrading(question, userAnswer) {
+  const correctAnswers = Array.isArray(question.answers)
+    ? question.answers.map(String)
+    : (typeof question.answers === 'string' ? [question.answers] : []);
+
+  const requestBody = {
+    responses: [{
+      question: question.question,
+      correctAnswers,
+      studentAnswer: userAnswer
+    }],
+    gradingInstructions:
+      "Be VERY lenient in grading. Award points for: 1) Any mention of key concepts, even with different terminology, 2) Synonyms and related terms (e.g., 'K+ efflux' = 'K+ moves out'), 3) Partial answers that show understanding, 4) Different but equivalent phrasings, 5) Detailed explanations that cover the expected concepts. Focus on whether the student understands the core concepts, not exact word matching. Award at least 40% if the answer demonstrates understanding of the main concepts, even if phrased differently."
+  };
+
+  try {
+    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
+      headers: AUTH_HEADERS,
+      timeout: 30000
+    });
+
+    const grade = response.data?.data?.grades?.[0];
+    let score = null;
+
+    if (grade && typeof grade.score === 'number') score = grade.score;
+    else if (response.data?.data?.scores?.[0] != null) score = response.data.data.scores[0];
+    else if (grade && typeof grade.percentage === 'number') score = grade.percentage / 100;
+    else throw new Error('Gemini grading service did not return a valid score');
+
+    if (score < 0 || score > 1) score = Math.max(0, Math.min(1, score));
+
+    const percentageScore = Math.round(score * 100);
+    const isCorrect = percentageScore >= 30;
+
+    const expectedJoined = correctAnswers.join('; ');
+    const expectedAnswer = correctAnswers.length
+      ? (expectedJoined.slice(0, 1000) + (expectedJoined.length > 1000 ? '…' : ''))
+      : '—';
+
+    const embed = new EmbedBuilder()
+      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
+      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
+      .setDescription('**Grading Results**')
+      .addFields(
+        { name: 'Your answer', value: String(userAnswer).slice(0, 1024) || '—', inline: false },
+        { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
+      )
+      .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 30%` });
+
+    return { embed, isCorrect, score };
+  } catch (error) {
+    console.error('Gemini FRQ grading error:', error);
+    if (error.response?.status === 429) throw new Error('Gemini grading service is rate-limited. Please try again in a moment.');
+    if ([503, 502].includes(error.response?.status)) throw new Error('Gemini grading service is temporarily unavailable. Please try again shortly.');
+    if ([401, 403].includes(error.response?.status)) throw new Error('Authentication failed for Gemini grading service. Please check your API configuration.');
+    if (error.code === 'ECONNABORTED') throw new Error('Gemini grading request timed out. The AI service may be busy.');
+    if (error.message.includes('did not return a valid score')) throw new Error('Gemini grading service returned an invalid response. Please try again.');
+    throw new Error(`Gemini grading failed: ${error.message || 'Unknown error'}. Please try again shortly.`);
+  }
+}
+
 /** Create answer check modal */
 function createAnswerModal(questionId, isMCQ) {
   const modal = new ModalBuilder()
@@ -410,6 +478,20 @@ function createAnswerModal(questionId, isMCQ) {
   return modal;
 }
 
+/** User-friendly error helpers (kept for external usage) */
+function getGradingErrorMessage(error) {
+  if (error?.response?.status === 429) return 'The grading service is rate-limited right now. Please try again in a moment.';
+  if ([401, 403].includes(error?.response?.status)) return 'Authentication failed for grading. Check your API key.';
+  if (error?.response?.status) return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  return `Grading failed: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+}
+function getExplanationErrorMessage(error) {
+  if (error?.response?.status === 429) return 'The explanation service is rate-limited right now. Please try again in a moment.';
+  if ([401, 403].includes(error?.response?.status)) return 'Authentication failed for explanation. Check your API key.';
+  if (error?.response?.status) return `Could not fetch an explanation: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
+  return `Could not fetch an explanation: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+}
+
 /** Handle check answer interaction (opens modal and grades) */
 async function handleCheckAnswerInteraction(interaction, question) {
   try {
@@ -420,7 +502,7 @@ async function handleCheckAnswerInteraction(interaction, question) {
 
     const isMCQ = Array.isArray(question.options) && question.options.length > 0;
     const modal = createAnswerModal(interaction.message.id, isMCQ);
-    await interaction.showModal(modal); // this acknowledges the button interaction
+    await interaction.showModal(modal); // ACKs the button interaction
 
     try {
       const modalSubmit = await interaction.awaitModalSubmit({
@@ -467,7 +549,6 @@ async function handleCheckAnswerInteraction(interaction, question) {
 
 /** Handle explain question interaction */
 async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
-  // Acknowledge fast
   await interaction.deferReply();
   try {
     const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
@@ -485,12 +566,11 @@ async function handleExplainQuestionInteraction(interaction, question, eventName
   }
 }
 
-// ---------- delete flow (ephemeral Yes/No; AI response after YES) ----------
+// ===================== Delete flow =====================
 
-/** Handle the DELETE button -> ephemeral confirm -> Yes/No -> call AI -> show AI response */
+/** Handle the DELETE button -> ephemeral confirm -> Yes/No -> AI call -> response */
 async function handleDeleteQuestionInteraction(buttonInteraction, safeId, question, eventName) {
   try {
-    // 1) Send ephemeral "Are you sure?" with Yes/No (no preview)
     await buttonInteraction.deferReply({ ephemeral: true });
 
     const qid = String(question?.base52 ?? question?.id ?? 'unknown');
@@ -508,7 +588,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
       components: [buildDeleteConfirmRow(safeId)]
     });
 
-    // 2) Await exactly one Yes/No click on the ephemeral message
+    // Await Yes/No click on ephemeral
     const filter = (i) =>
       i.user.id === buttonInteraction.user.id &&
       (i.customId === `confirm_yes_${safeId}` || i.customId === `confirm_no_${safeId}`);
@@ -521,23 +601,20 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
         componentType: ComponentType.Button
       });
     } catch {
-      // Timeout: clean up buttons
       try { await buttonInteraction.editReply({ components: [] }); } catch {}
       await buttonInteraction.followUp({ content: 'Deletion timed out.', ephemeral: true });
       return;
     }
 
-    // ACK the click immediately
-    await i.deferUpdate();
+    await i.deferUpdate(); // ACK the click immediately
 
     if (i.customId === `confirm_no_${safeId}`) {
-      // Remove buttons and confirm cancel
       try { await buttonInteraction.editReply({ components: [] }); } catch {}
       await buttonInteraction.followUp({ content: 'Deletion cancelled.', ephemeral: true });
       return;
     }
 
-    // 3) Perform actual deletion (AI validated server-side)
+    // Perform delete
     let result;
     try {
       result = await deleteQuestion(question, eventName);
@@ -550,7 +627,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
       return;
     }
 
-    // 4) Send second ephemeral message with AI response (always)
+    // AI decision message
     const responseEmbed = new EmbedBuilder()
       .setColor(result.success ? COLORS.GREEN : COLORS.RED)
       .setTitle(result.success ? 'Question deleted' : 'Deletion rejected')
@@ -561,7 +638,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
 
     await buttonInteraction.followUp({ embeds: [responseEmbed], ephemeral: true });
 
-    // 5) If success, disable the original public buttons
+    // Disable public buttons if success
     if (result.success) {
       try {
         const rows = Array.isArray(buttonInteraction.message?.components)
@@ -589,9 +666,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
       }
     }
 
-    // 6) Remove the confirm buttons after handling
     try { await buttonInteraction.editReply({ components: [] }); } catch {}
-
   } catch (err) {
     console.error('handleDeleteQuestionInteraction error:', err);
     try {
@@ -604,7 +679,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
   }
 }
 
-// ---------- command factory ----------
+// ===================== Command factory =====================
 
 function createSciOlyCommand(config) {
   const {
@@ -649,7 +724,7 @@ function createSciOlyCommand(config) {
 
     async execute(interaction) {
       try {
-        await interaction.deferReply(); // ACK within 3s
+        await interaction.deferReply(); // must ACK within 3s
 
         // Parse options with smart defaults
         let division = interaction.options.getString('division') || getDefaultDivision(eventName);
@@ -664,7 +739,6 @@ function createSciOlyCommand(config) {
           const unsupportedMessage = getUnsupportedMessage(eventName, division, questionType);
           if (fallbackDivision !== division) {
             division = fallbackDivision;
-            // followUp is fine after defer; ephemeral is supported
             await interaction.followUp({ content: unsupportedMessage, ephemeral: true });
           }
         }
@@ -728,7 +802,7 @@ function createSciOlyCommand(config) {
           ...(files.length > 0 && { files })
         });
 
-        // Collector for the public buttons on the sent message
+        // Collector for public buttons on the sent message
         const collector = sent.createMessageComponentCollector({
           componentType: ComponentType.Button,
           time: 30 * 60 * 1000,
@@ -747,7 +821,6 @@ function createSciOlyCommand(config) {
 
         collector.on('collect', async (buttonInteraction) => {
           try {
-            // Only original requester can interact
             if (buttonInteraction.user.id !== interaction.user.id) {
               await buttonInteraction.reply({ content: 'Only the original requester can use these buttons.', ephemeral: true });
               return;
@@ -784,6 +857,8 @@ function createSciOlyCommand(config) {
   };
 }
 
+// ===================== Exports =====================
+
 module.exports = {
   COLORS,
   AUTH_HEADERS,
@@ -799,9 +874,12 @@ module.exports = {
   fetchQuestion,
   handleQuestionImages,
   handleMCQCheck,
+  handleFRQGrading,
   createAnswerModal,
   letterFromIndex,
   getExplanationWithRetry,
+  getGradingErrorMessage,
+  getExplanationErrorMessage,
   handleCheckAnswerInteraction,
   handleExplainQuestionInteraction,
   deleteQuestion,
