@@ -10,7 +10,10 @@ const ID_EVENT_CONFIGS = {
   'Rocks and Minerals': { divisions: ['B/C'], idDivision: 'B/C' },
   'Water Quality - Freshwater': { divisions: ['B/C'], idDivision: 'B/C' },
   'Remote Sensing': { divisions: ['B/C'], idDivision: 'B/C' },
-  'Dynamic Planet - Oceanography': { divisions: ['B/C'], idDivision: 'B/C' }
+  'Dynamic Planet - Oceanography': { divisions: ['B/C'], idDivision: 'B/C' },
+  'Forensics': { divisions: ['C'], idDivision: 'C' },
+  'Designer Genes': { divisions: ['C'], idDivision: 'C' },
+  'Astronomy': { divisions: ['C'], idDivision: 'C' }
 };
 
 // ===== Helper Functions =====
