@@ -430,7 +430,7 @@ async function handleFRQGrading(question, userAnswer) {
     if (score < 0 || score > 1) score = Math.max(0, Math.min(1, score));
 
     const percentageScore = Math.round(score * 100);
-    const isCorrect = percentageScore >= 30;
+    const isCorrect = percentageScore >= 50;
 
     const expectedJoined = correctAnswers.join('; ');
     const expectedAnswer = correctAnswers.length
@@ -445,7 +445,7 @@ async function handleFRQGrading(question, userAnswer) {
         { name: 'Your answer', value: String(userAnswer).slice(0, 1024) || '—', inline: false },
         { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
       )
-      .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 30%` });
+      .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 50%` });
 
     return { embed, isCorrect, score };
   } catch (error) {
@@ -576,8 +576,7 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
     const qid = String(question?.base52 ?? question?.id ?? 'unknown');
     const confirmEmbed = new EmbedBuilder()
       .setColor(COLORS.BLUE)
-      .setTitle('Delete question?')
-      .setDescription('Are you sure you want to delete this question?')
+      .setTitle('Are you sure you want to delete this question?')
       .addFields(
         { name: 'Event', value: String(eventName), inline: true },
         { name: 'Question ID', value: qid, inline: true }
