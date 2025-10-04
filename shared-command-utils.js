@@ -39,6 +39,9 @@ const COLORS = {
   RED: 0xff5555
 };
 
+// Discord hard limit for choices on a single option
+const MAX_CHOICES = 25;
+
 // ---------- small utilities ----------
 
 /** Make a short ASCII-safe id for Discord custom_id (<= 100 chars) */
@@ -220,9 +223,7 @@ async function deleteQuestion(question, eventName) {
   });
 
   const success = res?.data?.success ?? (res?.status >= 200 && res?.status < 300);
-  const decision =
-    res?.data?.data?.decision ??
-    (success ? 'Approved' : 'Rejected');
+  const decision = res?.data?.data?.decision ?? (success ? 'Approved' : 'Rejected');
 
   const reasoning =
     res?.data?.data?.reasoning ??
@@ -312,6 +313,38 @@ async function fetchQuestion(eventName, options = {}) {
 
 // ---------- interactions ----------
 
+/**
+ * Handle image processing for ID questions (and regular images)
+ */
+async function handleQuestionImages(question, embed, allowImages, isID) {
+  const files = [];
+  try {
+    if (!allowImages) return files;
+
+    const url = question?.imageData || (Array.isArray(question?.images) && question.images[0]);
+    if (!url) return files;
+
+    // For ID questions, try attaching the image as a file (nicer cache in Discord)
+    if (isID) {
+      try {
+        const imageResponse = await axios.get(url, { responseType: 'arraybuffer', timeout: 10000 });
+        const buffer = Buffer.from(imageResponse.data);
+        const filename = `image_${Date.now()}.jpg`;
+        files.push({ attachment: buffer, name: filename });
+        embed.setImage(`attachment://${filename}`);
+        return files;
+      } catch {
+        // Fallback to URL
+      }
+    }
+
+    embed.setImage(url);
+  } catch (e) {
+    console.warn('handleQuestionImages warning:', e?.message || e);
+  }
+  return files;
+}
+
 /** Handle MCQ answer checking */
 function handleMCQCheck(question, userAnswer) {
   try {
@@ -358,68 +391,6 @@ function handleMCQCheck(question, userAnswer) {
   }
 }
 
-/** Handle FRQ answer grading */
-async function handleFRQGrading(question, userAnswer) {
-  const correctAnswers = Array.isArray(question.answers)
-    ? question.answers.map(String)
-    : (typeof question.answers === 'string' ? [question.answers] : []);
-
-  const requestBody = {
-    responses: [{
-      question: question.question,
-      correctAnswers,
-      studentAnswer: userAnswer
-    }],
-    gradingInstructions:
-      "Be VERY lenient in grading. Award points for: 1) Any mention of key concepts, even with different terminology, 2) Synonyms and related terms (e.g., 'K+ efflux' = 'K+ moves out'), 3) Partial answers that show understanding, 4) Different but equivalent phrasings, 5) Detailed explanations that cover the expected concepts. Focus on whether the student understands the core concepts, not exact word matching. Award at least 40% if the answer demonstrates understanding of the main concepts, even if phrased differently."
-  };
-
-  try {
-    const response = await axios.post(`${PRIMARY_BASE}/api/gemini/grade-free-responses`, requestBody, {
-      headers: AUTH_HEADERS,
-      timeout: 30000
-    });
-
-    const grade = response.data?.data?.grades?.[0];
-    let score = null;
-
-    if (grade && typeof grade.score === 'number') score = grade.score;
-    else if (response.data?.data?.scores?.[0] != null) score = response.data.data.scores[0];
-    else if (grade && typeof grade.percentage === 'number') score = grade.percentage / 100;
-    else throw new Error('Gemini grading service did not return a valid score');
-
-    if (score < 0 || score > 1) score = Math.max(0, Math.min(1, score));
-
-    const percentageScore = Math.round(score * 100);
-    const isCorrect = percentageScore >= 30;
-
-    const expectedJoined = correctAnswers.join('; ');
-    const expectedAnswer = correctAnswers.length
-      ? (expectedJoined.slice(0, 1000) + (expectedJoined.length > 1000 ? '…' : ''))
-      : '—';
-
-    const embed = new EmbedBuilder()
-      .setColor(isCorrect ? COLORS.GREEN : COLORS.RED)
-      .setTitle(isCorrect ? 'Correct!' : 'Wrong.')
-      .setDescription('**Grading Results**')
-      .addFields(
-        { name: 'Your answer', value: String(userAnswer).slice(0, 1024) || '—', inline: false },
-        { name: 'Expected answer', value: expectedAnswer || '—', inline: false }
-      )
-      .setFooter({ text: `AI Score: ${percentageScore}% • Threshold: 30%` });
-
-    return { embed, isCorrect, score };
-  } catch (error) {
-    console.error('Gemini FRQ grading error:', error);
-    if (error.response?.status === 429) throw new Error('Gemini grading service is rate-limited. Please try again in a moment.');
-    if ([503, 502].includes(error.response?.status)) throw new Error('Gemini grading service is temporarily unavailable. Please try again shortly.');
-    if ([401, 403].includes(error.response?.status)) throw new Error('Authentication failed for Gemini grading service. Please check your API configuration.');
-    if (error.code === 'ECONNABORTED') throw new Error('Gemini grading request timed out. The AI service may be busy.');
-    if (error.message.includes('did not return a valid score')) throw new Error('Gemini grading service returned an invalid response. Please try again.');
-    throw new Error(`Gemini grading failed: ${error.message || 'Unknown error'}. Please try again shortly.`);
-  }
-}
-
 /** Create answer check modal */
 function createAnswerModal(questionId, isMCQ) {
   const modal = new ModalBuilder()
@@ -439,30 +410,79 @@ function createAnswerModal(questionId, isMCQ) {
   return modal;
 }
 
-/** Get user-friendly grading error message */
-function getGradingErrorMessage(error) {
-  if (error?.response?.status === 429) return 'The grading service is rate-limited right now. Please try again in a moment.';
-  if ([401, 403].includes(error?.response?.status)) return 'Authentication failed for grading. Check your API key.';
-  if (error?.response?.status) return `Grading failed: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
-  return `Grading failed: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
+/** Handle check answer interaction (opens modal and grades) */
+async function handleCheckAnswerInteraction(interaction, question) {
+  try {
+    if (!question || !question.question) {
+      await interaction.reply({ content: 'Question data is invalid. Please try again.', flags: 64 });
+      return;
+    }
+
+    const isMCQ = Array.isArray(question.options) && question.options.length > 0;
+    const modal = createAnswerModal(interaction.message.id, isMCQ);
+    await interaction.showModal(modal);
+
+    try {
+      const modalSubmit = await interaction.awaitModalSubmit({
+        time: 5 * 60 * 1000,
+        filter: i => i.customId === `check_modal_${interaction.message.id}` && i.user.id === interaction.user.id
+      });
+
+      const userAnswer = modalSubmit.fields.getTextInputValue('answer_input').trim();
+      if (!userAnswer) {
+        await modalSubmit.reply({ content: 'Please provide an answer.', flags: 64 });
+        return;
+      }
+
+      if (isMCQ) {
+        const result = handleMCQCheck(question, userAnswer);
+        if (result.error) {
+          await modalSubmit.reply({ content: result.error, flags: 64 });
+          return;
+        }
+        await modalSubmit.reply({ embeds: [result.embed] });
+      } else {
+        await modalSubmit.deferReply();
+        try {
+          const result = await handleFRQGrading(question, userAnswer);
+          await modalSubmit.editReply({ embeds: [result.embed] });
+        } catch (error) {
+          console.error('FRQ grading error:', error);
+          await modalSubmit.editReply({ content: 'Grading failed. Please try again shortly.' });
+        }
+      }
+    } catch (err) {
+      if (err.code === 'INTERACTION_COLLECTOR_ERROR' || err.code === 10062) return;
+      try {
+        await interaction.followUp({ content: 'Something went wrong with the answer submission. Please try again.', flags: 64 });
+      } catch {}
+    }
+  } catch (error) {
+    console.error('Error in handleCheckAnswerInteraction:', error);
+    try {
+      await interaction.reply({ content: 'Something went wrong. Please try again.', flags: 64 });
+    } catch {}
+  }
 }
 
-/** Get user-friendly explanation error message */
-function getExplanationErrorMessage(error) {
-  if (error?.response?.status === 429) return 'The explanation service is rate-limited right now. Please try again in a moment.';
-  if ([401, 403].includes(error?.response?.status)) return 'Authentication failed for explanation. Check your API key.';
-  if (error?.response?.status) return `Could not fetch an explanation: HTTP ${error.response.status} - ${error.response.statusText || 'Unknown error'}. Please try again shortly.`;
-  return `Could not fetch an explanation: ${error?.message || 'Network or connection error'}. Please try again shortly.`;
-}
+/** Handle explain question interaction */
+async function handleExplainQuestionInteraction(interaction, question, eventName, commandName) {
+  await interaction.deferReply();
+  try {
+    const explanation = await getExplanationWithRetry(question, eventName, AUTH_HEADERS, commandName);
+    const text = explanation || 'No explanation available.';
+    const cleanedText = cleanLatexForDiscord(text);
+    const formattedText = formatExplanationText(cleanedText);
 
-// Difficulty mapping used by all commands
-const DIFFICULTY_MAP = {
-  'Very Easy (0-19%)': { min: 0, max: 0.19 },
-  'Easy (20-39%)': { min: 0.2, max: 0.39 },
-  'Medium (40-59%)': { min: 0.4, max: 0.59 },
-  'Hard (60-79%)': { min: 0.6, max: 0.79 },
-  'Very Hard (80-100%)': { min: 0.8, max: 1 }
-};
+    const embed = { color: COLORS.BLUE, title: 'Explanation' };
+    const truncated = formattedText.length > 4096 ? formattedText.substring(0, 4093) + '...' : formattedText;
+    embed.description = truncated;
+
+    await interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    await interaction.editReply('Could not fetch an explanation at this time.');
+  }
+}
 
 // ---------- delete flow (ephemeral Yes/No; AI response after YES) ----------
 
@@ -535,10 +555,14 @@ async function handleDeleteQuestionInteraction(buttonInteraction, safeId, questi
           // 5) If success, disable the original public buttons
           if (result.success) {
             try {
-              const newComponents = buttonInteraction.message.components.map(row => {
+              const rows = Array.isArray(buttonInteraction.message?.components)
+                ? buttonInteraction.message.components
+                : [];
+              const newComponents = rows.map(row => {
                 const newRow = new ActionRowBuilder();
-                for (const comp of row.components) {
-                  if (comp.type === 2) {
+                const comps = Array.isArray(row?.components) ? row.components : [];
+                for (const comp of comps) {
+                  if (comp?.type === 2) {
                     newRow.addComponents(
                       new ButtonBuilder()
                         .setCustomId(comp.customId ?? 'disabled')
@@ -604,25 +628,28 @@ function createSciOlyCommand(config) {
         option.setName('question_type')
           .setDescription('Question type')
           .setRequired(false)
-          .addChoices(...buildQuestionTypeChoices(allowImages))
+          .addChoices(...((buildQuestionTypeChoices(allowImages) || []).slice(0, MAX_CHOICES)))
       )
       .addStringOption(option =>
         option.setName('division')
           .setDescription('Division')
           .setRequired(false)
-          .addChoices(...divisions.map(d => ({ name: `Division ${d}`, value: d })))
+          .addChoices(...((divisions || []).slice(0, MAX_CHOICES).map(d => ({ name: `Division ${d}`, value: d }))))
       )
       .addStringOption(option =>
         option.setName('difficulty')
           .setDescription('Difficulty')
           .setRequired(false)
-          .addChoices(...Object.keys(DIFFICULTY_MAP).map(d => ({ name: d, value: d })))
+          .addChoices(...(Object.keys(DIFFICULTY_MAP).slice(0, MAX_CHOICES).map(d => ({ name: d, value: d }))))
       )
       .addStringOption(option =>
         option.setName('subtopic')
           .setDescription('Subtopic')
           .setRequired(false)
-          .addChoices(...allowedSubtopics.map(s => ({ name: s, value: s })))
+          .addChoices(...((allowedSubtopics || []).slice(0, MAX_CHOICES).map(s => ({
+            name: String(s).slice(0, 100),
+            value: String(s).slice(0, 100)
+          }))))
       ),
 
     async execute(interaction) {
@@ -774,13 +801,16 @@ module.exports = {
   buildDeleteConfirmRow,
   pickFirstQuestion,
   fetchQuestion,
+  handleQuestionImages,
   handleMCQCheck,
   handleFRQGrading,
   createAnswerModal,
   letterFromIndex,
   getExplanationWithRetry,
-  getGradingErrorMessage,
-  getExplanationErrorMessage,
+  getGradingErrorMessage: () => {},
+  getExplanationErrorMessage: () => {},
+  handleCheckAnswerInteraction,
+  handleExplainQuestionInteraction,
   deleteQuestion,
   handleDeleteQuestionInteraction,
   createSciOlyCommand
