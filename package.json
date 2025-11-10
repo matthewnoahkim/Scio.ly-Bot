@@ -19,8 +19,13 @@
   "homepage": "https://github.com/matthewnoahkim/Scio.ly-Bot#readme",
   "dependencies": {
     "axios": "^1.11.0",
+<<<<<<< HEAD
     "discord.js": "^14.21.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0"
+=======
+    "discord.js": "^14.24.2",
+    "dotenv": "^17.2.1"
+>>>>>>> a0a20051c4dd80247810fbd11ecbf843fa18a4a9
   }
 }

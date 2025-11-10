@@ -125,8 +125,15 @@ function resolveCorrectIndex(question) {
   }
 }
 
+/** Format elapsed time as MM:SS */
+function formatElapsedTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
 /** Build a question embed (safe against Discord limits) */
-function buildQuestionEmbed(question, eventName, allowImages = false) {
+function buildQuestionEmbed(question, eventName, allowImages = false, elapsedSeconds = 0) {
   const embed = new EmbedBuilder()
     .setColor(COLORS.BLUE)
     .setTitle(eventName)
@@ -165,6 +172,11 @@ function buildQuestionEmbed(question, eventName, allowImages = false) {
     {
       name: 'Difficulty',
       value: typeof question.difficulty === 'number' ? `${Math.round(question.difficulty * 100)}%` : '—',
+      inline: true
+    },
+    {
+      name: 'Time',
+      value: `⏱️ ${formatElapsedTime(elapsedSeconds)}`,
       inline: true
     },
     {
@@ -788,7 +800,7 @@ function createSciOlyCommand(config) {
           return;
         }
 
-        const embed = buildQuestionEmbed(question, eventName, allowImages);
+        const embed = buildQuestionEmbed(question, eventName, allowImages, 0);
         const files = await handleQuestionImages(question, embed, allowImages, isID);
 
         // Build components with a safe id
@@ -800,6 +812,31 @@ function createSciOlyCommand(config) {
           components,
           ...(files.length > 0 && { files })
         });
+
+        // Start timer
+        const startTime = Date.now();
+        let timerInterval = null;
+
+        const updateTimer = async () => {
+          try {
+            const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+            const updatedEmbed = buildQuestionEmbed(question, eventName, allowImages, elapsedSeconds);
+            await sent.edit({
+              embeds: [updatedEmbed],
+              components: sent.components,
+              ...(files.length > 0 && { files })
+            });
+          } catch (error) {
+            // Message may have been deleted or edited, stop timer
+            if (timerInterval) {
+              clearInterval(timerInterval);
+              timerInterval = null;
+            }
+          }
+        };
+
+        // Update timer every 2 seconds to avoid rate limits
+        timerInterval = setInterval(updateTimer, 2000);
 
         // Collector for public buttons on the sent message
         const collector = sent.createMessageComponentCollector({
@@ -813,10 +850,20 @@ function createSciOlyCommand(config) {
           if (msg.id === sent.id) {
             collector.stop('message_deleted');
             interaction.client.off('messageDelete', onDelete);
+            if (timerInterval) {
+              clearInterval(timerInterval);
+              timerInterval = null;
+            }
           }
         };
         interaction.client.on('messageDelete', onDelete);
-        collector.on('end', () => interaction.client.off('messageDelete', onDelete));
+        collector.on('end', () => {
+          interaction.client.off('messageDelete', onDelete);
+          if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+          }
+        });
 
         collector.on('collect', async (buttonInteraction) => {
           try {
