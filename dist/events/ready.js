@@ -12,4 +12,3 @@ exports.default = {
         });
     },
 };
-//# sourceMappingURL=ready.js.map

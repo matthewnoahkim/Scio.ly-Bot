@@ -24,4 +24,3 @@ exports.default = (0, shared_command_utils_1.createSciOlyCommand)({
     allowedSubtopics: ALLOWED_SUBTOPICS,
     allowImages: ALLOW_IMAGES,
 });
-//# sourceMappingURL=materialssciencenanomaterials.js.map

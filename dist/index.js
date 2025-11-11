@@ -89,4 +89,3 @@ for (const filePath of eventFiles) {
     }
 }
 void client.login(token);
-//# sourceMappingURL=index.js.map

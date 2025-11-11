@@ -47,4 +47,3 @@ function normalizeQuestion(question) {
         answers: answers.length > 0 ? answers : undefined,
     };
 }
-//# sourceMappingURL=question-normalizer.js.map

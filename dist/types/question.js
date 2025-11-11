@@ -58,4 +58,3 @@ exports.ExplanationEnvelopeSchema = exports.ApiEnvelopeSchema.extend({
     response: zod_1.z.string().optional(),
     result: zod_1.z.string().optional(),
 });
-//# sourceMappingURL=question.js.map

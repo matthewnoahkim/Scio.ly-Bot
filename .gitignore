@@ -1,3 +1,7 @@
 node_modules
 .env
 config.json
+dist/
+tests/**/*.js
+tests/**/*.js.map
+tests/**/*.d.ts

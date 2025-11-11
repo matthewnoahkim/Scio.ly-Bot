@@ -200,4 +200,3 @@ exports.default = {
     getFallbackDivision,
     getUnsupportedMessage,
 };
-//# sourceMappingURL=event-capabilities.js.map
