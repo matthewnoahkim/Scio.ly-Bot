@@ -1,0 +1,22 @@
+import { NormalizedQuestion } from './types/question';
+export declare function letterFromIndex(idx: number): string;
+export declare function resolveCorrectIndexSimple(question: NormalizedQuestion): number | null;
+export declare function cleanLatexForDiscord(text: string | null | undefined): string | null | undefined;
+export declare function formatExplanationText(text: string | null | undefined): string | null | undefined;
+export declare function buildFullQuestionText(question: NormalizedQuestion): string;
+export declare function buildTutorPrompt(questionText: string, eventName: string): string;
+export declare function extractExplanation(responseData: unknown): string | null;
+export declare function callGeminiThroughScioLy(question: NormalizedQuestion, eventName: string, userAnswer: string | null, authHeaders: Record<string, string>, logPrefix?: string): Promise<string>;
+export declare function getExplanationWithRetry(question: NormalizedQuestion, eventName: string, authHeaders: Record<string, string>, logPrefix?: string): Promise<string>;
+declare const _default: {
+    letterFromIndex: typeof letterFromIndex;
+    resolveCorrectIndexSimple: typeof resolveCorrectIndexSimple;
+    cleanLatexForDiscord: typeof cleanLatexForDiscord;
+    formatExplanationText: typeof formatExplanationText;
+    buildFullQuestionText: typeof buildFullQuestionText;
+    buildTutorPrompt: typeof buildTutorPrompt;
+    extractExplanation: typeof extractExplanation;
+    getExplanationWithRetry: typeof getExplanationWithRetry;
+    callGeminiThroughScioLy: typeof callGeminiThroughScioLy;
+};
+export default _default;
