@@ -8,10 +8,14 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 const RATE_LIMIT_MAX_REQUESTS = parsePositiveInt(process.env.RATE_LIMIT_MAX_REQUESTS, 1);
 const RATE_LIMIT_WINDOW_MS = parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 1_000);
 const RATE_LIMIT_BLOCK_DURATION_MS = parsePositiveInt(process.env.RATE_LIMIT_BLOCK_DURATION_MS, 2_000);
+const RATE_LIMIT_MAX_BLOCK_DURATION_MS = parsePositiveInt(process.env.RATE_LIMIT_MAX_BLOCK_DURATION_MS, 60_000);
+const RATE_LIMIT_VIOLATION_RESET_MS = parsePositiveInt(process.env.RATE_LIMIT_VIOLATION_RESET_MS, 60_000);
 
 interface RateLimitState {
 	timestamps: number[];
 	blockedUntil: number;
+	violationCount: number;
+	lastViolationTime: number;
 }
 
 const userRateLimitState = new Map<string, RateLimitState>();
@@ -25,7 +29,17 @@ export default {
 		const userId = interaction.user?.id || interaction.member?.user?.id;
 
 		if (userId) {
-			const state = userRateLimitState.get(userId) ?? { timestamps: [], blockedUntil: 0 };
+			const state = userRateLimitState.get(userId) ?? {
+				timestamps: [],
+				blockedUntil: 0,
+				violationCount: 0,
+				lastViolationTime: 0,
+			};
+
+			// Reset violation count if enough time has passed since last violation
+			if (state.violationCount > 0 && now - state.lastViolationTime > RATE_LIMIT_VIOLATION_RESET_MS) {
+				state.violationCount = 0;
+			}
 
 			if (state.blockedUntil > now) {
 				const remainingSeconds = Math.ceil((state.blockedUntil - now) / 1000);
@@ -44,10 +58,16 @@ export default {
 			state.timestamps = state.timestamps.filter(timestamp => timestamp > earliestAllowed);
 
 			if (state.timestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
-				state.blockedUntil = now + RATE_LIMIT_BLOCK_DURATION_MS;
+				// Calculate exponential backoff: base * 2^violationCount, capped at max
+				const exponentialDuration = RATE_LIMIT_BLOCK_DURATION_MS * Math.pow(2, state.violationCount);
+				const blockDuration = Math.min(exponentialDuration, RATE_LIMIT_MAX_BLOCK_DURATION_MS);
+
+				state.violationCount += 1;
+				state.lastViolationTime = now;
+				state.blockedUntil = now + blockDuration;
 				userRateLimitState.set(userId, state);
 
-				const waitSeconds = Math.ceil(RATE_LIMIT_BLOCK_DURATION_MS / 1000);
+				const waitSeconds = Math.ceil(blockDuration / 1000);
 				const message = `You're sending commands too quickly. Please wait ${waitSeconds} second${waitSeconds === 1 ? '' : 's'} before trying again.`;
 
 				try {
