@@ -30,7 +30,22 @@ if (!token) {
     console.error('ERROR: BOT_TOKEN not found in environment variables');
     process.exit(1);
 }
-const { port } = config_json_1.default;
+const configWithPort = config_json_1.default;
+const DEFAULT_PORT = 53_134;
+function resolvePort() {
+    const envPort = process.env.PORT;
+    if (envPort) {
+        const parsed = Number.parseInt(envPort, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+            return parsed;
+        }
+    }
+    if (typeof configWithPort.port === 'number' && configWithPort.port > 0) {
+        return configWithPort.port;
+    }
+    return DEFAULT_PORT;
+}
+const port = resolvePort();
 const app = (0, express_1.default)();
 app.get('/', (_request, response) => {
     response.sendFile('index.html', { root: node_path_1.default.resolve(__dirname, '..') });
