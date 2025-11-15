@@ -40,28 +40,7 @@ if (!token) {
 	process.exit(1);
 }
 
-const configWithPort = config as typeof config & { port?: number };
-const DEFAULT_PORT = 53_134;
-
-function resolvePort(): number {
-	const envPort = process.env.PORT;
-
-	if (envPort) {
-		const parsed = Number.parseInt(envPort, 10);
-
-		if (Number.isFinite(parsed) && parsed > 0) {
-			return parsed;
-		}
-	}
-
-	if (typeof configWithPort.port === 'number' && configWithPort.port > 0) {
-		return configWithPort.port;
-	}
-
-	return DEFAULT_PORT;
-}
-
-const port = resolvePort();
+const { port } = config;
 const app = express();
 app.get('/', (_request, response) => {
 	response.sendFile('index.html', { root: path.resolve(__dirname, '..') });
